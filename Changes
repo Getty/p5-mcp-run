@@ -1,0 +1,8 @@
+{{$NEXT}}
+
+  - Initial release
+  - MCP::Run base class with configurable run tool
+  - MCP::Run::Bash implementation using IPC::Open3
+  - Command whitelist via allowed_commands
+  - Per-command working_directory and timeout
+  - Timeout enforcement with alarm/SIGTERM (exit code 124)
