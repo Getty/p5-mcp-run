@@ -6,19 +6,18 @@ use Mojo::Base 'MCP::Server', -signatures;
 
 =head1 SYNOPSIS
 
-    package My::MCPServer;
-    use Mojo::Base 'MCP::Run::Bash', -signatures;
+    use MCP::Run::Bash;
 
-    my $server = My::MCPServer->new(
+    my $server = MCP::Run::Bash->new(
         allowed_commands  => ['ls', 'cat', 'grep'],
         working_directory => '/var/data',
         timeout           => 60,
     );
-    $server->run;
+    $server->to_stdio;
 
 =head1 DESCRIPTION
 
-Base class for MCP servers that expose a command execution tool. Subclass
+Base class for MCP servers that expose a command execution tool. Subclasses
 L<MCP::Server> and registers a C<run> tool via the MCP protocol when
 instantiated. Subclasses must implement L</execute> to provide the actual
 execution mechanism.

@@ -23,6 +23,11 @@ subtest 'custom tool_name' => sub {
   is $server->tools->[0]->name, 'exec', 'custom tool name';
 };
 
+subtest 'custom tool_description' => sub {
+  my $server = MCP::Run::Bash->new(name => 'TestServer', tool_description => 'Run stuff');
+  is $server->tool_description, 'Run stuff', 'custom tool description';
+};
+
 subtest 'simple command execution' => sub {
   my $server = MCP::Run::Bash->new(name => 'TestServer');
   my $result = $server->execute('echo hello', undef, 10);
@@ -50,6 +55,13 @@ subtest 'working_directory' => sub {
   my $result = $server->execute('pwd', '/tmp', 10);
   is $result->{exit_code}, 0, 'exit code 0';
   like $result->{stdout}, qr{^/tmp/?$}, 'ran in /tmp';
+};
+
+subtest 'server default working_directory' => sub {
+  my $server = MCP::Run::Bash->new(name => 'TestServer', working_directory => '/tmp');
+  my $tool   = $server->tools->[0];
+  my $result = $tool->call({command => 'pwd'}, {});
+  like $result->{content}[0]{text}, qr{/tmp}, 'uses server default working_directory';
 };
 
 subtest 'timeout' => sub {
