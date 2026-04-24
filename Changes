@@ -1,5 +1,16 @@
 {{$NEXT}}
 
+0.002     2026-04-24T00:00:00Z
+
+  - Add MCP::Run::Compress for automatic output compression
+    - 8-stage filter pipeline (strip_ansi, match_output, transform,
+      strip_lines, keep_lines, truncate, head/tail, max_lines, on_empty)
+    - 30+ command-specific filters (ls, git, make, docker, kubectl, etc.)
+    - Output detection to differentiate command output formats
+    - Per-server and per-tool-call compression toggle
+  - Add MCP::Run::Compress::Filters.pod documentation
+  - Add Text::Trim dependency
+
 0.001     2026-02-25 01:32:04Z
 
   - Initial release
