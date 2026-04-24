@@ -1,12 +1,13 @@
-=head1 NAME
+package MCP::Run::Compress::Filters;
+# ABSTRACT: Command Output Compression Reference
 
-MCP::Run::Compress::Filters - Command Output Compression Reference
-
-=head1 DESCRIPTION
+=description
 
 This document lists all commands that L<MCP::Run::Compress> filters and how
 they are compressed. Each filter removes noise, truncates verbose output,
 and limits lines to reduce token count while preserving essential information.
+
+=cut
 
 =head1 COMMANDS
 
@@ -62,7 +63,7 @@ Strips branch information, keeps changed/untracked files.
 =item C<git diff>
 
 Strips diff headers (C<diff --git>, C<index>, C<--->, C<+++>).
-Keeps actual L<-> and C<+> lines with content.
+Keeps actual C<-> and C<+> lines with content.
 
 =item C<git log>
 
@@ -427,8 +428,10 @@ B<on_empty> - Fallback message when output is empty after filtering
         on_empty => 'my-command: ok',
     );
 
-=head1 SEE ALSO
+=seealso
 
 L<MCP::Run::Compress>, L<MCP::Run>
 
 =cut
+
+1;

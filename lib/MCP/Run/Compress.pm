@@ -1,11 +1,8 @@
 package MCP::Run::Compress;
+our $VERSION = '0.002';
 use Mojo::Base -base;
 
-our $VERSION = '0.002';
-
-=head1 NAME
-
-MCP::Run::Compress - Output compression for LLMs
+# ABSTRACT: Output compression for LLMs
 
 =head1 SYNOPSIS
 
