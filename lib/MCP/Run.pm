@@ -73,12 +73,33 @@ Name of the MCP tool registered by this server. Defaults to C<run>.
 
 =cut
 
-has tool_description  => 'Execute a command and return stdout, stderr, and exit code';
+has tool_description  => sub {
+  my $self = shift;
+  my $base = 'Execute a command and return stdout, stderr, and exit code';
+  if ($self->compress) {
+    $base .= '. Output is compressed for token efficiency - set compress:false in arguments if you need full detail';
+  }
+  return $base;
+};
 
 =attr tool_description
 
 Description of the MCP tool registered by this server. Defaults to
 C<Execute a command and return stdout, stderr, and exit code>.
+
+=cut
+
+has compress          => 0;
+
+=attr compress
+
+Enable output compression for LLM efficiency. When enabled, command output
+is passed through a filter pipeline that removes noise, truncates lines,
+and limits output. Can be set at server construction time or per-tool-call
+via the C<compress> argument.
+
+    my $server = MCP::Run::Bash->new(compress => 1);
+    # Or per call: { command => 'ls -la', compress => 1 }
 
 =cut
 
@@ -99,6 +120,7 @@ sub _register_run_tool ($self) {
         command           => { type => 'string',  description => 'The command to execute' },
         working_directory => { type => 'string',  description => 'Working directory for the command' },
         timeout           => { type => 'integer', description => 'Timeout in seconds' },
+        compress          => { type => 'boolean', description => 'Compress output for LLM efficiency' },
       },
       required => ['command'],
     },
@@ -118,9 +140,10 @@ sub _handle_run ($self, $tool, $args) {
 
   my $wd      = $args->{working_directory} // $self->working_directory;
   my $timeout = $args->{timeout}           // $self->timeout;
+  my $compress = $args->{compress}         // $self->compress;
 
   my $result = $self->execute($command, $wd, $timeout);
-  return $self->format_result($tool, $result);
+  return $self->format_result($tool, $result, $compress);
 }
 
 sub execute ($self, $command, $working_directory, $timeout) {
@@ -152,11 +175,18 @@ See L<MCP::Run::Bash> for the reference implementation.
 
 =cut
 
-sub format_result ($self, $tool, $result) {
+sub format_result ($self, $tool, $result, $compress = undef) {
   my $exit_code = $result->{exit_code} // -1;
   my $stdout    = $result->{stdout}    // '';
   my $stderr    = $result->{stderr}    // '';
   my $error     = $result->{error};
+
+  $compress //= $self->compress;
+
+  if ($compress) {
+    (my $compressor) = $self->_get_compressor;
+    ($stdout, $stderr) = $compressor->compress('', $stdout, $stderr);
+  }
 
   my $text = "Exit code: $exit_code\n";
   $text .= "\n=== STDOUT ===\n$stdout\n" if length $stdout;
@@ -165,6 +195,13 @@ sub format_result ($self, $tool, $result) {
 
   my $is_error = $exit_code != 0 ? 1 : 0;
   return $tool->text_result($text, $is_error);
+}
+
+my $_compressor;
+
+sub _get_compressor ($self) {
+  $_compressor //= MCP::Run::Compress->new;
+  return $_compressor;
 }
 
 =method format_result
