@@ -1,7 +1,5 @@
 {{$NEXT}}
 
-0.002     2026-04-24T00:00:00Z
-
   - Add MCP::Run::Compress for automatic output compression
     - 8-stage filter pipeline (strip_ansi, match_output, transform,
       strip_lines, keep_lines, truncate, head/tail, max_lines, on_empty)
