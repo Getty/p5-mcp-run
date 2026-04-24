@@ -1,14 +1,79 @@
 # MCP-Run
 
-MCP server that exposes a command execution tool via the [Model Context Protocol](https://modelcontextprotocol.io).
+Claude Code `PreToolUse` hook that compresses `Bash` tool output with 30+
+command-specific filters (`ls`, `git`, `make`, `cargo`, `cpanm`, `kubectl`,
+`terraform`, …) so the LLM sees the essence — not 900 lines of noise. Prefix
+a command with `no-compress ` to bypass the filter for one call.
 
-Subclasses [MCP::Server](https://metacpan.org/pod/MCP::Server) and registers a `run` tool that accepts a command string, executes it, and returns stdout, stderr, and the exit code.
+Also ships `MCP::Run::Bash`, a stdio MCP server with the same compression,
+for Claude Desktop and `.mcp.json`.
 
-## Installation
+## Install with Docker (no Perl required)
 
-    cpanm MCP::Run
+```bash
+docker run --rm \
+    -v "$HOME:$HOME" -e HOME="$HOME" \
+    raudssus/mcp-run-compress --install-claude
+```
 
-## Synopsis
+That's it. Patches `~/.claude/settings.json` and drops a bypass-skill into
+`~/.claude/skills/`. Host only needs `bash`, `mktemp`, `base64`, `docker`.
+
+## Install with Perl
+
+```bash
+cpanm MCP::Run
+mcp-run-compress --install-claude
+```
+
+Same result, no Docker startup per Bash call.
+
+## How the Docker install works
+
+The hook needs two things from two different worlds:
+
+- **Run the real Bash command** (`git status`, `dzil test`, …) with the
+  host's cwd, env, and binaries.
+- **Filter the output** — pure text processing, no host access needed.
+
+So the hook splits them. The rewritten command runs the original
+command on the host, captures stdout/stderr into temp files, then
+mounts those into a container that compresses them:
+
+```
+{ __o=$(mktemp) && __e=$(mktemp) || exit 1
+  trap 'rm -f "$__o" "$__e"' EXIT
+  bash -c "$(printf %s '<B64>' | base64 -d)" >"$__o" 2>"$__e"   # host
+  __ec=$?
+  docker run --rm -v "$__o:/in/stdout:ro" -v "$__e:/in/stderr:ro" \
+       raudssus/mcp-run-compress:<pinned> \
+       --filter-files --cmd-b64 '<B64>' /in/stdout /in/stderr   # filter
+  exit $__ec
+}
+```
+
+Host bash runs on the host. Docker runs only the compression. No chroot,
+no shared toolchain, no Perl on the host.
+
+### Which install mode gets written
+
+`bin/mcp-run-compress` reads `MCP_RUN_COMPRESS_INSTALL_MODE`:
+
+- unset / `native` → hook is `mcp-run-compress --hook`, rewrites to
+  `mcp-run-compress --b64 <…>` (in-process).
+- `docker` → hook is `docker run … --hook`, rewrites to the host-side
+  pipe-through snippet above.
+
+The Docker image bakes `ENV MCP_RUN_COMPRESS_INSTALL_MODE=docker`, so
+any `--install-claude` run *inside* the container writes the Docker-mode
+hook automatically. A native `cpanm` install on the host leaves the var
+unset. No detection heuristic; the image marks itself.
+
+The image also bakes `MCP_RUN_COMPRESS_IMAGE=raudssus/mcp-run-compress:<version>`,
+so the hook is pinned to the exact version that installed it. Upgrades
+are explicit: `docker pull … && … --install-claude` again.
+
+## Library use (MCP::Run::Bash)
 
 ```perl
 use MCP::Run::Bash;
@@ -18,43 +83,60 @@ my $server = MCP::Run::Bash->new(
     working_directory => '/var/data',
     timeout           => 60,
 );
-
 $server->to_stdio;
 ```
 
-## Classes
+Attributes: `allowed_commands` (whitelist, default: all), `working_directory`
+(default: cwd), `timeout` (default: 30s), `tool_name` (default: `run`),
+`tool_description`.
 
-- **MCP::Run** — Abstract base class. Registers the MCP tool, validates against `allowed_commands`, and delegates to `execute()`.
-- **MCP::Run::Bash** — Concrete implementation. Runs commands via `bash -c` using `IPC::Open3`. Captures stdout/stderr separately. Enforces timeouts with `alarm` (exit code 124, matching GNU `timeout(1)`).
-
-## Attributes
-
-| Attribute | Default | Description |
-|-----------|---------|-------------|
-| `allowed_commands` | `undef` (all) | ArrayRef whitelist of permitted command names (first word) |
-| `working_directory` | `undef` (cwd) | Default working directory |
-| `timeout` | `30` | Default timeout in seconds |
-| `tool_name` | `run` | Name of the registered MCP tool |
-| `tool_description` | ... | Description of the registered MCP tool |
-
-## MCP Tool Schema
-
-The registered tool accepts:
+Tool input schema:
 
 ```json
-{
-  "command": "ls -la",
-  "working_directory": "/tmp",
-  "timeout": 10
-}
+{ "command": "ls -la", "working_directory": "/tmp", "timeout": 10 }
 ```
 
-Only `command` is required. `working_directory` and `timeout` override the server defaults per invocation.
+See `MCP::Run::Compress::Filters` for the preset filter catalog.
 
-## Author
+## Environment variables
 
-Torsten Raudssus <torsten@raudssus.de>
+| Var                              | Purpose                                                    |
+|----------------------------------|------------------------------------------------------------|
+| `MCP_RUN_ALLOWED_COMMANDS`       | Comma-separated whitelist for `mcp-run-bash`               |
+| `MCP_RUN_WORKING_DIRECTORY`      | Default cwd for `mcp-run-bash`                             |
+| `MCP_RUN_TIMEOUT`                | Default timeout (seconds) for `mcp-run-bash`               |
+| `MCP_RUN_COMPRESS`               | `0` disables compression in `mcp-run-bash`                 |
+| `MCP_RUN_TOOL_NAME`              | Registered MCP tool name (default `run`)                   |
+| `MCP_RUN_COMPRESS_INSTALL_MODE`  | `native` (default) or `docker`. Baked to `docker` in image |
+| `MCP_RUN_COMPRESS_IMAGE`         | Image ref for docker-mode hook. Pinned to `:<version>` in image |
+
+## Build the Docker image locally
+
+```bash
+dzil build
+VERSION=$(perl -Ilib -MMCP::Run -E 'say $MCP::Run::VERSION')
+docker build \
+  --build-arg MCP_RUN_VERSION=$VERSION \
+  --target runtime \
+  -t raudssus/mcp-run-compress:$VERSION \
+  -t raudssus/mcp-run-compress:latest \
+  MCP-Run-$VERSION
+```
+
+## Release (maintainer)
+
+`dzil release` uploads to CPAN, then `maint/release-after.pl` creates the
+matching GitHub release, `docker build`s, and `docker push`es both
+`:VERSION` and `:latest` to Docker Hub.
+
+```bash
+dzil release
+# extra build flags:
+MCP_RUN_DOCKER_BUILD_ARGS='--platform linux/amd64,linux/arm64' dzil release
+```
+
+Needs `docker login` and `gh auth login`.
 
 ## License
 
-This is free software; you can redistribute it and/or modify it under the same terms as the Perl 5 programming language system itself.
+Copyright (c) 2026 Torsten Raudssus. Same terms as Perl 5 itself.

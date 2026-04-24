@@ -1,4 +1,32 @@
 {{$NEXT}}
+  - Ship a Docker image (raudssus/mcp-run-compress) so the Claude Code
+    hook can be installed without a Perl toolchain on the host. The
+    image is a multi-stage Dockerfile (perl:5.40-slim builder +
+    slim runtime) with ENTRYPOINT mcp-run-compress
+    - New env var MCP_RUN_COMPRESS_INSTALL_MODE selects `native`
+      (default, in-process wrapper) or `docker` (pipe-through-docker).
+      The shipped image bakes the var to `docker`, native Perl installs
+      leave it unset, so the same `--install-claude` call produces the
+      right hook in either context
+    - New env var MCP_RUN_COMPRESS_IMAGE overrides the image ref the
+      docker-mode hook uses. The shipped image pins itself to the exact
+      version that built it, so `--install-claude` from inside the
+      container writes a versioned hook into ~/.claude/settings.json
+    - In docker mode, --hook rewrites Bash commands to a small host-side
+      snippet that runs the original command on the host (host cwd,
+      host env, host binaries) and streams stdout/stderr through a
+      docker container for compression — the host only needs bash,
+      coreutils (mktemp, base64) and docker
+    - New --filter-files mode reads captured stdout/stderr from two
+      files and emits compressed streams; used by the docker rewrite
+    - Dist::Zilla release hook (maint/release-after.pl) builds and
+      pushes both :VERSION and :latest tags to Docker Hub as part of
+      `dzil release`, and uploads the CPAN tarball to the matching
+      GitHub release
+  - Declare JSON::MaybeXS and Path::Tiny as explicit runtime prereqs
+    (previously pulled in transitively)
+  - Add POD to bin/mcp-run-compress, rewrite README.md around the
+    Docker-first install flow
 
 0.002     2026-04-24 17:57:40Z
 
