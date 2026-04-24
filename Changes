@@ -1,4 +1,4 @@
-{{$NEXT}}
+0.002     2026-04-24 17:57:40Z
 
   - Add bin/mcp-run-bash — stdio entry point for MCP::Run::Bash,
     configurable via MCP_RUN_ALLOWED_COMMANDS, MCP_RUN_WORKING_DIRECTORY,
