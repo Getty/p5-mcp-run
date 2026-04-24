@@ -1,0 +1,228 @@
+#!/usr/bin/env perl
+# PODNAME: mcp-run-compress
+# ABSTRACT: Wrap a shell command through MCP::Run::Compress for LLM-friendly output
+
+use strict;
+use warnings;
+use Getopt::Long qw( GetOptions );
+use MIME::Base64 qw( encode_base64 decode_base64 );
+use JSON::MaybeXS ();
+use Path::Tiny qw( path );
+use MCP::Run::Bash;
+use MCP::Run::Compress;
+
+my ( $hook, $b64, $install, $help );
+GetOptions(
+  'hook'           => \$hook,
+  'b64=s'          => \$b64,
+  'install-claude' => \$install,
+  'help|h'         => \$help,
+) or do { print_help(); exit 2 };
+
+if ($hook)        { exit run_hook() }
+if (defined $b64) { exit run_command($b64) }
+if ($install)     { exit install_claude() }
+
+print_help();
+exit 0;
+
+sub _json {
+  return JSON::MaybeXS->new( utf8 => 1, canonical => 1, convert_blessed => 1 );
+}
+
+sub run_hook {
+  my ( $self ) = @_;
+  my $json = _json();
+  my $raw  = do { local $/; <STDIN> };
+  my $in   = eval { $json->decode($raw) } || {};
+  my $cmd  = $in->{tool_input}{command};
+
+  my $bypass =
+       !defined $cmd
+    || !length $cmd
+    || $in->{tool_input}{run_in_background}
+    || $cmd =~ /\bmcp-run-compress\b/;
+
+  my $out = {
+    hookSpecificOutput => {
+      hookEventName => 'PreToolUse',
+    },
+  };
+
+  if ( !$bypass && $cmd =~ /\A\s*no-compress\s+(.+)\z/s ) {
+    $out->{hookSpecificOutput}{updatedInput} = { command => $1 };
+    $bypass = 1;
+  }
+
+  unless ($bypass) {
+    my $encoded = encode_base64( $cmd, '' );
+    $out->{hookSpecificOutput}{updatedInput} = {
+      command => "mcp-run-compress --b64 $encoded",
+    };
+  }
+
+  print $json->encode($out);
+  return 0;
+}
+
+sub run_command {
+  my ( $encoded ) = @_;
+  my $command = decode_base64($encoded);
+
+  my $server = MCP::Run::Bash->new;
+  my $result = $server->execute( $command, undef, 1800 );
+
+  my $compressor = MCP::Run::Compress->new;
+  my ( $stdout, $stderr ) = $compressor->compress(
+    $command,
+    $result->{stdout} // '',
+    $result->{stderr} // '',
+  );
+
+  if ( length $stdout ) {
+    print STDOUT $stdout;
+    print STDOUT "\n" unless $stdout =~ /\n\z/;
+  }
+  if ( length $stderr ) {
+    print STDERR $stderr;
+    print STDERR "\n" unless $stderr =~ /\n\z/;
+  }
+  if ( defined $result->{error} ) {
+    print STDERR "mcp-run-compress: $result->{error}\n";
+  }
+
+  return $result->{exit_code} // 1;
+}
+
+sub install_claude {
+  my $file = path( $ENV{HOME} // glob('~'), '.claude', 'settings.json' );
+  my $json = JSON::MaybeXS->new(
+    utf8            => 1,
+    pretty          => 1,
+    canonical       => 1,
+    convert_blessed => 1,
+  );
+
+  my $cfg = {};
+  if ( $file->exists ) {
+    my $raw = $file->slurp_utf8;
+    $cfg = $json->decode($raw) if length $raw;
+  }
+
+  $cfg->{hooks}             //= {};
+  $cfg->{hooks}{PreToolUse} //= [];
+
+  for my $group ( @{ $cfg->{hooks}{PreToolUse} } ) {
+    next unless ref $group eq 'HASH' && ( $group->{matcher} // '' ) eq 'Bash';
+    for my $h ( @{ $group->{hooks} // [] } ) {
+      next unless ref $h eq 'HASH';
+      if ( ( $h->{command} // '' ) =~ /\bmcp-run-compress\b/ ) {
+        print "Already installed in $file\n";
+        return 0;
+      }
+    }
+  }
+
+  push @{ $cfg->{hooks}{PreToolUse} }, {
+    matcher => 'Bash',
+    hooks   => [ { type => 'command', command => 'mcp-run-compress --hook' } ],
+  };
+
+  $file->parent->mkpath unless $file->parent->exists;
+  $file->spew_utf8( $json->encode($cfg) );
+  print "Installed PreToolUse hook in $file\n";
+
+  my $skill = $file->parent->child(
+    'skills', 'bash-output-is-compressed-prefix-no-compress-to-bypass', 'SKILL.md',
+  );
+  $skill->parent->mkpath unless $skill->parent->exists;
+  $skill->spew_utf8(<<'SKILL');
+---
+name: bash-output-is-compressed-prefix-no-compress-to-bypass
+description: READ THIS BEFORE RUNNING ANY Bash TOOL COMMAND. Every Bash tool call is routed through the mcp-run-compress hook, which strips columns, noise, and truncates long output so you see a compressed view — NOT the real shell output. If you need raw unfiltered output (full `ls -l` columns, verbose logs, exact byte counts, etc.), prefix the command with `no-compress ` for that single invocation.
+---
+
+Every Bash command you run is silently rewritten by a PreToolUse hook into
+`mcp-run-compress --b64 <...>`, which filters and truncates the output.
+
+To get the real, unmodified output for one command, prefix it with `no-compress `:
+
+    no-compress ls -l
+    no-compress cat /var/log/syslog
+    no-compress dmesg
+
+The hook strips the prefix and runs the rest raw. Use it whenever compressed
+output would hide something you actually need to see.
+SKILL
+  print "Installed skill at $skill\n";
+
+  return 0;
+}
+
+sub print_help {
+  print <<'HELP';
+mcp-run-compress — wrap a shell command through MCP::Run::Compress filters
+so the output is LLM-friendly (noise stripped, long output truncated).
+
+USAGE
+
+  mcp-run-compress --b64 <BASE64>
+      Decode the base64-encoded command, execute it, and emit the compressed
+      stdout/stderr with the original exit code. This is the wrapper form
+      that the Claude Code hook rewrites Bash commands into.
+
+  mcp-run-compress --hook
+      Claude Code PreToolUse hook mode. Reads the hook invocation JSON on
+      stdin, emits a response JSON on stdout that rewrites the Bash tool's
+      `command` to go through `mcp-run-compress --b64 …`. Background jobs
+      (`run_in_background: true`) and already-wrapped commands are passed
+      through untouched.
+
+  mcp-run-compress --install-claude
+      Patch ~/.claude/settings.json to register `mcp-run-compress --hook`
+      as a PreToolUse hook on the Bash tool. Idempotent.
+
+  mcp-run-compress [--help]
+      Print this help.
+
+MANUAL INSTALL
+
+  Add this block to ~/.claude/settings.json (merge with existing hooks):
+
+    {
+      "hooks": {
+        "PreToolUse": [
+          {
+            "matcher": "Bash",
+            "hooks": [
+              { "type": "command", "command": "mcp-run-compress --hook" }
+            ]
+          }
+        ]
+      }
+    }
+
+  From then on every Bash tool call is rewritten to:
+
+      mcp-run-compress --b64 <base64 of your command>
+
+  which executes via IPC::Open3, routes stdout/stderr through the
+  MCP::Run::Compress filter pipeline, and emits the compressed streams
+  with the original exit code — transparent to Claude Code.
+
+NOTES
+
+  * The hook only rewrites the Bash `command`; it does not set a
+    permission decision, so the usual allow/deny prompts keep firing.
+  * Background commands (`run_in_background: true`) and commands that
+    already reference `mcp-run-compress` are not rewritten.
+  * Prefix a command with `no-compress ` to bypass compression for that
+    single invocation — the hook strips the prefix and runs the rest raw.
+    `--install-claude` also drops a minimal skill at
+    ~/.claude/skills/bash-output-is-compressed-prefix-no-compress-to-bypass/
+    that tells Claude about it.
+
+SEE ALSO
+  MCP::Run::Compress, MCP::Run::Bash, mcp-run-bash
+HELP
+}

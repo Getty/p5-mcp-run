@@ -1,5 +1,22 @@
 {{$NEXT}}
 
+  - Add bin/mcp-run-bash — stdio entry point for MCP::Run::Bash,
+    configurable via MCP_RUN_ALLOWED_COMMANDS, MCP_RUN_WORKING_DIRECTORY,
+    MCP_RUN_TIMEOUT, MCP_RUN_COMPRESS and MCP_RUN_TOOL_NAME env vars.
+    Compression is enabled by default; disable with MCP_RUN_COMPRESS=0
+  - Add MCP::Run::run_stdio convenience constructor
+  - Add bin/mcp-run-compress — wrap a shell command through
+    MCP::Run::Compress filters. Ships a Claude Code PreToolUse hook
+    (--hook) plus an --install-claude flag that registers the hook
+    in ~/.claude/settings.json so every Bash tool call gets its
+    output compressed automatically
+    - Prefix a Bash command with `no-compress ` to bypass compression
+      for that single invocation — the hook strips the prefix and
+      passes the raw command through unwrapped
+    - --install-claude also drops a minimal skill at
+      ~/.claude/skills/bash-output-is-compressed-prefix-no-compress-to-bypass/
+      that teaches Claude about the bypass
+
   - Add MCP::Run::Compress for automatic output compression
     - 8-stage filter pipeline (strip_ansi, match_output, transform,
       strip_lines, keep_lines, truncate, head/tail, max_lines, on_empty)

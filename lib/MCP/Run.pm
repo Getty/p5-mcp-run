@@ -146,6 +146,23 @@ sub _handle_run ($self, $tool, $args) {
   return $self->format_result($tool, $result, $compress);
 }
 
+sub run_stdio ($class_or_self, %args) {
+  my $self = ref $class_or_self ? $class_or_self : $class_or_self->new(%args);
+  $self->to_stdio;
+  return $self;
+}
+
+=method run_stdio
+
+    MCP::Run::Bash->run_stdio(%args);
+    $server->run_stdio;
+
+Convenience wrapper that constructs the server (when called as a class
+method) and hands it to L<MCP::Server/to_stdio>. Intended as the one-liner
+entry point for C<bin/> scripts.
+
+=cut
+
 sub execute ($self, $command, $working_directory, $timeout) {
   die "execute() must be implemented by a subclass";
 }
