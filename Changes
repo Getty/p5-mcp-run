@@ -1,3 +1,5 @@
+{{$NEXT}}
+
 0.003     2026-04-24 19:22:16Z
   - Ship a Docker image (raudssus/mcp-run-compress) so the Claude Code
     hook can be installed without a Perl toolchain on the host. The
