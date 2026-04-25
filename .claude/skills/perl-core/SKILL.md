@@ -48,6 +48,15 @@ cpanm --info Module::Name | tail -1
 - **`my ( $self ) = @_;`** — explicit destructure, not `my $self = shift;`. Space inside the parens.
 - **Explicit import lists with `qw( ... )`** — `use Foo qw( bar baz );`. Never rely on default exports unless they're documented as stable.
 
+### Methods, not bare subs
+
+- **In a Moose class, every helper is a method on `$self`.** Not a bare `sub _foo { ... }` invoked as `_foo($self->goldmine, $x)`. The class is there; use it.
+- **Per-process caches go on the singleton as a Moose attribute** (`has _cache => ( is => 'ro', default => sub { {} } )`), not a `my %CACHE` package variable. Survives test isolation, lets a future caller swap state per instance.
+- **No package-level state** unless it's a true global (an `%ENGINE_CLASS` lookup table that's literally constant counts; a per-call cache does not).
+- Bare subs are OK in **non-class utility modules** that are imported as functions (`Goldmine::I18n::gm_key`, `Goldmine::BlockerReason::blocker`). Once a file says `use Moose` / `use MooseX::Singleton`, every `sub` should be a method.
+
+Why: bare subs hide what the call needs (`$gm` passed manually each time), can't be overridden in a subclass, can't be mocked in tests, and force every caller to thread state by hand. `$self->method` is one extra colon-pair and gives all four for free.
+
 ## Style / whitespace
 
 - **2-space indentation.** Not 4. Not tabs. Every Getty Perl file.
@@ -60,6 +69,12 @@ cpanm --info Module::Name | tail -1
 ## JSON
 
 - **`JSON::MaybeXS`** always. When encoding, set `canonical => 1, convert_blessed => 1` on the encoder object.
+
+## DBIC-ish result classes
+
+- Column defs via **`DBIx::Class::Candy`** or **`DBIO::Candy`** — use `primary_column` / `column` macros, not `__PACKAGE__->add_column(...)`.
+- **`keep_storage_value => 1`** on enum and integer columns that shouldn't be inflated/deflated.
+- **`\'NOW()'`** (literal scalar ref) for DB-side timestamp defaults.
 
 ## Forbidden / anti-patterns
 

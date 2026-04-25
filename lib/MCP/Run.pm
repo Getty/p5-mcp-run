@@ -45,6 +45,30 @@ result. Defaults to C<undef>, which allows all commands.
 
 =cut
 
+has validator => sub { undef };
+
+=attr validator
+
+Coderef that validates a command before execution. The coderef is called as:
+
+    my $allow = $validator->($command, $working_directory);
+
+Return C<"1"> (string or number) to allow the command. Return any other
+defined value (a string reason, C<undef>, or a false value) to deny it.
+
+    my $server = MCP::Run::Bash->new(
+        validator => sub {
+            my ($cmd, $dir) = @_;
+            return 1 if $cmd =~ /^ls|^cat|^git/;
+            return "blocked by security policy";
+        },
+    );
+
+If not set (C<undef>), all commands are allowed after the
+C<allowed_commands> check.
+
+=cut
+
 has working_directory => sub { undef };
 
 =attr working_directory
@@ -135,6 +159,14 @@ sub _handle_run ($self, $tool, $args) {
     my ($first_word) = $command =~ /^\s*(\S+)/;
     unless ($first_word && grep { $_ eq $first_word } @$allowed) {
       return $tool->text_result("Command not allowed: $first_word", 1);
+    }
+  }
+
+  if (my $validator = $self->validator) {
+    my $vresult = $validator->($command, $args->{working_directory});
+    unless (defined($vresult) && !ref($vresult) && $vresult eq '1') {
+      my $reason = defined($vresult) && length($vresult) ? $vresult : 'denied';
+      return $tool->text_result("Command $reason", 1);
     }
   }
 

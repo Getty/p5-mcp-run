@@ -1,5 +1,10 @@
 {{$NEXT}}
 
+  - Add C<validator> attribute to MCP::Run and MCP::Run::Bash. A coderef
+    can be provided to perform custom command validation before execution.
+    Return C<"1"> to allow, any other defined value to deny with a reason
+    string. Undefined return is treated as denied.
+
 0.003     2026-04-24 19:22:16Z
   - Ship a Docker image (raudssus/mcp-run-compress) so the Claude Code
     hook can be installed without a Perl toolchain on the host. The
