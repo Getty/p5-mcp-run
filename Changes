@@ -1,9 +1,20 @@
+Revision history for MCP-Run
+
 {{$NEXT}}
 
   - Add C<validator> attribute to MCP::Run and MCP::Run::Bash. A coderef
     can be provided to perform custom command validation before execution.
     Return C<"1"> to allow, any other defined value to deny with a reason
     string. Undefined return is treated as denied.
+  - Add parsed_command filter matching in MCP::Run::Compress using
+    Getopt::Long for order-independent flag parsing. New filters can use
+    C<< parsed_command->{program => 'git', subcommand => 'diff', flags => { stat => 1 } } >>
+    instead of regex C<< command => '^git\s+diff\b' >>.
+  - Add C<git diff --stat> filter with compact "N+M- filename" format.
+  - Add filters: C<netstat>, C<ip addr/route/link>, C<mount>, C<lsblk>, C<blkid>.
+  - Convert all existing filters (git, docker, kubectl, cargo, terraform,
+    helm, npm, pip, pytest, curl, wget, ansible-playbook, rsync, iptables,
+    ping, etc.) to use parsed_command approach.
 
 0.003     2026-04-24 19:22:16Z
   - Ship a Docker image (raudssus/mcp-run-compress) so the Claude Code

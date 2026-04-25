@@ -65,6 +65,19 @@ Strips branch information, keeps changed/untracked files.
 Strips diff headers (C<diff --git>, C<index>, C<--->, C<+++>).
 Keeps actual C<-> and C<+> lines with content.
 
+=item C<git diff --stat>
+
+Transforms to compact "N+M- filename" format (additions+deletions-filename).
+Strips summary lines (X files changed, insertions(+), deletions(-)).
+
+    # Before:
+    #  file1.txt | 5 +++ --- 2 deletions(-)
+    #  file2.rb  | 3 +++ --- 1 deletion(-)
+    #  2 files changed, 8 insertions(+), 3 deletions(-)
+    # After:
+    #  5+2-file1.txt
+    #  3+1-file2.rb
+
 =item C<git log>
 
 Shows first 20 and last 10 lines (with total count),
@@ -271,6 +284,26 @@ Strips PING header, resolves, and statistics.
 
 Strips sent/received bytes and total size summary.
 
+=item C<netstat>
+
+Truncates columns at 150 characters, max 50 lines.
+
+=item C<ip addr>, C<ip route>, C<ip link>
+
+Truncates at 150 characters, max 30-50 lines.
+
+=item C<mount>
+
+Truncates columns at 200 characters, max 50 lines.
+
+=item C<lsblk>
+
+Lists block devices in tree format. Truncates at 150 characters, max 50 lines.
+
+=item C<blkid>
+
+Lists block device attributes. Truncates at 200 characters, max 50 lines.
+
 =item C<fail2ban-client>
 
 Strips blank lines, max 30 lines.
@@ -417,6 +450,7 @@ B<on_empty> - Fallback message when output is empty after filtering
 
     my $compressor = MCP::Run::Compress->new;
 
+    # Legacy regex-based matching
     $compressor->register_filter(
         command => '^my-command\b',
         strip_lines_matching => [
@@ -427,6 +461,36 @@ B<on_empty> - Fallback message when output is empty after filtering
         max_lines => 30,
         on_empty => 'my-command: ok',
     );
+
+    # New parsed_command matching (order-independent flags)
+    $compressor->register_filter(
+        parsed_command => {
+            program    => 'my-tool',
+            subcommand => 'process',
+            flags      => { verbose => 1, output => 1 },
+        },
+        strip_lines_matching => [qr(^\s*$)],
+        max_lines => 50,
+    );
+
+=head1 PARSED COMMAND APPROACH
+
+Filters can use either regex-based C<command> matching (legacy) or the new
+C<parsed_command> approach. The parsed approach extracts program, subcommand,
+and flags using L<Getopt::Long>, enabling order-independent flag matching.
+
+    # Matches: git diff --stat, git diff --stat -w 5, git -C /path diff --stat
+    $compressor->register_filter(
+        parsed_command => {
+            program    => 'git',
+            subcommand => 'diff',
+            flags      => { stat => 1 },
+        },
+        transform => sub { ... },
+    );
+
+The C<flags> hash specifies which flags must be present. Flag values are
+ignored - only presence matters for matching.
 
 =seealso
 

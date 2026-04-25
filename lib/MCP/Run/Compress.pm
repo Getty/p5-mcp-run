@@ -27,17 +27,102 @@ filters to reduce token count while preserving essential information.
 
 use Text::Trim qw(trim);
 use List::Util qw(max min);
+use Getopt::Long qw(GetOptionsFromArray);
 
 has filters => sub { +{} };
+
+=func _parse_command
+
+    my $parsed = $self->_parse_command($command);
+
+Parses a command string into structured components for filter matching:
+
+    program    - first word (e.g., 'git')
+    subcommand - second word if not a flag (e.g., 'diff' in 'git diff')
+    flags      - hashref of parsed flags (e.g., { stat => 1, w => 5 })
+    args       - remaining non-flag arguments
+
+Supports git-style commands where the subcommand is the first non-flag word.
+
+=cut
+
+sub _parse_command {
+  my ($self, $command) = @_;
+  my @words = split /\s+/, $command;
+  return { program => '', subcommand => undef, flags => {}, args => [] } unless @words;
+
+  my $program = shift @words;
+  my ($subcommand, @remaining);
+
+  # Find the subcommand (first word not starting with -)
+  for my $i (0 .. $#words) {
+    if ($words[$i] !~ /^-/) {
+      $subcommand = $words[$i];
+      @remaining = @words[$i+1 .. $#words];
+      last;
+    }
+  }
+  @remaining = @words unless defined $subcommand;
+
+  # Parse flags with Getopt::Long
+  my %flags;
+
+  # Build a Getopt::Long spec for common flag types
+  my @spec = (
+    'stat'      => sub { $flags{stat} = 1 },
+    'numstat'   => sub { $flags{numstat} = 1 },
+    'shortstat' => sub { $flags{shortstat} = 1 },
+    'w=i'       => \$flags{w},
+    'width=i'   => \$flags{width},
+    'stat-width=i'   => \$flags{'stat-width'},
+    'stat-name-width=i' => \$flags{'stat-name-width'},
+    'M=s'       => \$flags{M},
+    'ignore-space-change' => sub { $flags{'ignore-space-change'} = 1 },
+    'ignore-all-space' => sub { $flags{'ignore-all-space'} = 1 },
+    'ignore-blank-lines' => sub { $flags{'ignore-blank-lines'} = 1 },
+    'U=i'       => \$flags{U},
+    'unified=i' => \$flags{unified},
+    'color'     => sub { $flags{color} = 1 },
+    'no-color'  => sub { $flags{color} = 0 },
+    'cached'    => sub { $flags{cached} = 1 },
+    'no-pager'  => sub { $flags{'no-pager'} = 1 },
+  );
+
+  # Use GetOptionsFromArray to parse - suppress warnings for unknown flags
+  my $warn_handler = $SIG{__WARN__};
+  local $SIG{__WARN__} = sub { };  # Suppress warnings during parsing
+  GetOptionsFromArray(\@remaining, @spec);
+
+  return {
+    program    => $program,
+    subcommand => $subcommand,
+    flags      => \%flags,
+    args       => \@remaining,
+  };
+}
 
 sub register_filter {
   my $self = shift;
   my %args = @_;
 
-  my $command = $args{command};
-  delete $args{command};
+  my $command = delete $args{command};
+  my $parsed_command = delete $args{parsed_command};
 
-  $self->filters->{$command} = {
+  # Determine storage key: parsed commands use a special key format
+  my $key;
+  if ($parsed_command) {
+    my @flag_parts;
+    for my $flag (sort keys %{$parsed_command->{flags} // {}}) {
+      push @flag_parts, "$flag=" . ($parsed_command->{flags}{$flag} // 1);
+    }
+    $key = 'parsed:' . ($parsed_command->{program} // '') . ':' . ($parsed_command->{subcommand} // '') . ':' . join(',', @flag_parts);
+  } else {
+    $key = $command;
+  }
+
+  $self->filters->{$key} = {
+    command            => $command,
+    parsed_command     => $parsed_command,
     strip_ansi           => $args{strip_ansi}           // 0,
     strip_lines_matching => $args{strip_lines_matching} // [],
     keep_lines_matching  => $args{keep_lines_matching}  // [],
@@ -54,6 +139,26 @@ sub register_filter {
   };
 
   return;
+}
+
+sub _match_parsed_command {
+  my ($self, $filter_spec, $parsed) = @_;
+  return 0 unless $parsed && $filter_spec;
+
+  # Must match program
+  return 0 if ($filter_spec->{program} // '') ne ($parsed->{program} // '');
+
+  # Subcommand must match if specified
+  if (defined $filter_spec->{subcommand}) {
+    return 0 if ($filter_spec->{subcommand} // '') ne ($parsed->{subcommand} // '');
+  }
+
+  # All specified flags must be present and truthy
+  for my $flag (keys %{$filter_spec->{flags} // {}}) {
+    return 0 unless $parsed->{flags}{$flag};
+  }
+
+  return 1;
 }
 
 sub _build_default_filters {
@@ -131,7 +236,10 @@ sub _build_default_filters {
 
   # git status: compact output
   $self->register_filter(
-    command => '^git\s+status\b',
+    parsed_command => {
+      program    => 'git',
+      subcommand => 'status',
+    },
     strip_lines_matching => [
       qr(^\s*$),
       qr(^On branch),
@@ -153,6 +261,42 @@ sub _build_default_filters {
     ],
     truncate_lines_at => 150,
     max_lines => 200,
+  );
+
+  # git diff --stat: compact format "N+M- filename"
+  $self->register_filter(
+    parsed_command => {
+      program    => 'git',
+      subcommand => 'diff',
+      flags      => { stat => 1 },
+    },
+    transform => sub {
+      my ($line) = @_;
+      # Format: " 1 file changed, 3 insertions(+), 2 deletions(-)" or
+      #         " file1.txt | 5 +++ ---"
+      # Transform to "N+M- filename" for file lines
+      if ($line =~ /^\s*(\S+)\s*\|\s*(\d+)\s*\+(\d+)\s*-\s*(\d+)/) {
+        # "| 5 +++ ---" format -> "3+2- filename"
+        return "$2+$3-$1";
+      }
+      if ($line =~ /^\s*(\S+)\s*\|\s*(\d+)\s+\+(\d+),?\s*(\d+)?\s*-/) {
+        # "| 5 +3 -2" format
+        my ($file, $changes, $add, $del) = ($1, $2, $3, $4 // 0);
+        return "$add+$del-$file";
+      }
+      # Remove summary line "X files changed"
+      if ($line =~ /^\s*\d+\s+files?\s+changed/) {
+        return undef;  # Skip this line
+      }
+      return $line;
+    },
+    strip_lines_matching => [
+      qr(^\s*$),
+      qr(^\s*\d+\s+files?\s+changed),
+      qr(^\s*\d+\s+insertions?\(\+\)),
+      qr(^\s*\d+\s+deletions?\(\-\)),
+    ],
+    max_lines => 100,
   );
 
   # cat: detect and filter code
@@ -193,7 +337,21 @@ sub _build_default_filters {
 
   # docker ps: compact output
   $self->register_filter(
-    command => '^docker\s+(ps|images)\b',
+    parsed_command => {
+      program    => 'docker',
+      subcommand => 'ps',
+    },
+    strip_lines_matching => [qr(^\s*$)],
+    truncate_lines_at => 120,
+    max_lines => 30,
+  );
+
+  # docker images: compact output
+  $self->register_filter(
+    parsed_command => {
+      program    => 'docker',
+      subcommand => 'images',
+    },
     strip_lines_matching => [qr(^\s*$)],
     truncate_lines_at => 120,
     max_lines => 30,
@@ -201,7 +359,10 @@ sub _build_default_filters {
 
   # terraform plan: strip refresh progress
   $self->register_filter(
-    command => '^terraform\s+plan\b',
+    parsed_command => {
+      program    => 'terraform',
+      subcommand => 'plan',
+    },
     strip_lines_matching => [
       qr(^\s*$),
       qr(^Refreshing state\.\.\.),
@@ -213,7 +374,10 @@ sub _build_default_filters {
 
   # terraform apply: strip progress
   $self->register_filter(
-    command => '^terraform\s+apply\b',
+    parsed_command => {
+      program    => 'terraform',
+      subcommand => 'apply',
+    },
     strip_lines_matching => [
       qr(^\s*$),
       qr(^Refreshing state\.\.\.),
@@ -226,7 +390,10 @@ sub _build_default_filters {
 
   # docker build: strip build progress
   $self->register_filter(
-    command => '^docker\s+build\b',
+    parsed_command => {
+      program    => 'docker',
+      subcommand => 'build',
+    },
     strip_lines_matching => [
       qr(^\s*$),
       qr(^#\s*\d+\s+\[\s*\d+\s+/\s*\d+\]),
@@ -237,7 +404,10 @@ sub _build_default_filters {
 
   # docker run: compact output
   $self->register_filter(
-    command => '^docker\s+run\b',
+    parsed_command => {
+      program    => 'docker',
+      subcommand => 'run',
+    },
     strip_lines_matching => [
       qr(^\s*$),
       qr(^Unable to find image),
@@ -250,7 +420,10 @@ sub _build_default_filters {
 
   # kubectl get: compact output
   $self->register_filter(
-    command => '^kubectl\s+get\b',
+    parsed_command => {
+      program    => 'kubectl',
+      subcommand => 'get',
+    },
     strip_lines_matching => [qr(^\s*$)],
     truncate_lines_at => 150,
     max_lines => 50,
@@ -258,7 +431,10 @@ sub _build_default_filters {
 
   # kubectl describe: strip noise
   $self->register_filter(
-    command => '^kubectl\s+describe\b',
+    parsed_command => {
+      program    => 'kubectl',
+      subcommand => 'describe',
+    },
     strip_lines_matching => [
       qr(^\s*$),
       qr(^Name:\s+\w+),
@@ -272,7 +448,10 @@ sub _build_default_filters {
 
   # cargo build: strip compile progress
   $self->register_filter(
-    command => '^cargo\s+build\b',
+    parsed_command => {
+      program    => 'cargo',
+      subcommand => 'build',
+    },
     strip_lines_matching => [
       qr(^\s*$),
       qr(^Compiling\s+\w+),
@@ -284,7 +463,10 @@ sub _build_default_filters {
 
   # cargo test: compact output
   $self->register_filter(
-    command => '^cargo\s+test\b',
+    parsed_command => {
+      program    => 'cargo',
+      subcommand => 'test',
+    },
     strip_lines_matching => [
       qr(^\s*$),
       qr(^Compiling\s+\w+),
@@ -315,7 +497,10 @@ sub _build_default_filters {
 
   # npm install: strip noise
   $self->register_filter(
-    command => '^npm\s+install\b',
+    parsed_command => {
+      program    => 'npm',
+      subcommand => 'install',
+    },
     strip_lines_matching => [
       qr(^\s*$),
       qr(^added\s+\d+\s+packages?),
@@ -325,9 +510,57 @@ sub _build_default_filters {
     max_lines => 30,
   );
 
-  # yarn: similar to npm
+  # yarn install: similar to npm
   $self->register_filter(
-    command => '^(yarn|pnpm)\s+(install|add)\b',
+    parsed_command => {
+      program    => 'yarn',
+      subcommand => 'install',
+    },
+    strip_lines_matching => [
+      qr(^\s*$),
+      qr(^Done in\s+),
+      qr(^Resolving completed),
+      qr(^Linking completed),
+    ],
+    max_lines => 30,
+  );
+
+  # yarn add: similar to npm
+  $self->register_filter(
+    parsed_command => {
+      program    => 'yarn',
+      subcommand => 'add',
+    },
+    strip_lines_matching => [
+      qr(^\s*$),
+      qr(^Done in\s+),
+      qr(^Resolving completed),
+      qr(^Linking completed),
+    ],
+    max_lines => 30,
+  );
+
+  # pnpm install: similar to npm
+  $self->register_filter(
+    parsed_command => {
+      program    => 'pnpm',
+      subcommand => 'install',
+    },
+    strip_lines_matching => [
+      qr(^\s*$),
+      qr(^Done in\s+),
+      qr(^Resolving completed),
+      qr(^Linking completed),
+    ],
+    max_lines => 30,
+  );
+
+  # pnpm add: similar to npm
+  $self->register_filter(
+    parsed_command => {
+      program    => 'pnpm',
+      subcommand => 'add',
+    },
     strip_lines_matching => [
       qr(^\s*$),
       qr(^Done in\s+),
@@ -339,7 +572,10 @@ sub _build_default_filters {
 
   # pip install: strip progress
   $self->register_filter(
-    command => '^pip\s+install\b',
+    parsed_command => {
+      program    => 'pip',
+      subcommand => 'install',
+    },
     strip_lines_matching => [
       qr(^\s*$),
       qr(^Collecting\s+),
@@ -352,7 +588,9 @@ sub _build_default_filters {
 
   # pytest: compact output
   $self->register_filter(
-    command => '^pytest\b',
+    parsed_command => {
+      program    => 'pytest',
+    },
     strip_lines_matching => [
       qr(^\s*$),
       qr(^=+.*=+$/),
@@ -365,7 +603,9 @@ sub _build_default_filters {
 
   # curl: strip headers
   $self->register_filter(
-    command => '^curl\b',
+    parsed_command => {
+      program    => 'curl',
+    },
     filter_stderr => 1,
     strip_lines_matching => [
       qr(^\s*$),
@@ -380,7 +620,9 @@ sub _build_default_filters {
 
   # wget: strip progress
   $self->register_filter(
-    command => '^wget\b',
+    parsed_command => {
+      program    => 'wget',
+    },
     strip_lines_matching => [
       qr(^\s*$),
       qr(^--\d{4}-\d{2}-\d{2}),
@@ -396,7 +638,27 @@ sub _build_default_filters {
 
   # helm install: strip progress
   $self->register_filter(
-    command => '^helm\s+(install|upgrade)\b',
+    parsed_command => {
+      program    => 'helm',
+      subcommand => 'install',
+    },
+    strip_lines_matching => [
+      qr(^\s*$),
+      qr(^NAME:\s+\w+),
+      qr(^NAMESPACE:\s+\w+),
+      qr(^STATUS:\s+),
+      qr(^REVISION:\s+\d+),
+      qr(^NOTES:$),
+    ],
+    max_lines => 50,
+  );
+
+  # helm upgrade: strip progress
+  $self->register_filter(
+    parsed_command => {
+      program    => 'helm',
+      subcommand => 'upgrade',
+    },
     strip_lines_matching => [
       qr(^\s*$),
       qr(^NAME:\s+\w+),
@@ -410,7 +672,9 @@ sub _build_default_filters {
 
   # ansible-playbook: strip progress
   $self->register_filter(
-    command => '^ansible-playbook\b',
+    parsed_command => {
+      program    => 'ansible-playbook',
+    },
     strip_lines_matching => [
       qr(^\s*$),
       qr(^PLAY\s+\[),
@@ -426,7 +690,9 @@ sub _build_default_filters {
 
   # rsync: strip progress
   $self->register_filter(
-    command => '^rsync\b',
+    parsed_command => {
+      program    => 'rsync',
+    },
     strip_lines_matching => [
       qr(^\s*$),
       qr(^sent\s+\d+\s+bytes),
@@ -438,7 +704,9 @@ sub _build_default_filters {
 
   # iptables -L: compact
   $self->register_filter(
-    command => '^iptables\s+-L\b',
+    parsed_command => {
+      program    => 'iptables',
+    },
     strip_lines_matching => [qr(^\s*$)],
     truncate_lines_at => 150,
     max_lines => 50,
@@ -446,7 +714,9 @@ sub _build_default_filters {
 
   # ping: strip progress
   $self->register_filter(
-    command => '^ping\b',
+    parsed_command => {
+      program    => 'ping',
+    },
     strip_lines_matching => [
       qr(^\s*$),
       qr(^PING\s+),
@@ -456,9 +726,83 @@ sub _build_default_filters {
     max_lines => 20,
   );
 
+  # netstat: compact output for -tulpn
+  $self->register_filter(
+    parsed_command => {
+      program    => 'netstat',
+    },
+    strip_lines_matching => [qr(^\s*$)],
+    truncate_lines_at => 150,
+    max_lines => 50,
+  );
+
+  # ip addr: compact
+  $self->register_filter(
+    parsed_command => {
+      program    => 'ip',
+      subcommand => 'addr',
+    },
+    strip_lines_matching => [qr(^\s*$)],
+    truncate_lines_at => 150,
+    max_lines => 50,
+  );
+
+  # ip route: compact
+  $self->register_filter(
+    parsed_command => {
+      program    => 'ip',
+      subcommand => 'route',
+    },
+    strip_lines_matching => [qr(^\s*$)],
+    max_lines => 30,
+  );
+
+  # ip link: compact
+  $self->register_filter(
+    parsed_command => {
+      program    => 'ip',
+      subcommand => 'link',
+    },
+    strip_lines_matching => [qr(^\s*$)],
+    max_lines => 30,
+  );
+
+  # mount: strip noise
+  $self->register_filter(
+    parsed_command => {
+      program    => 'mount',
+    },
+    strip_lines_matching => [qr(^\s*$)],
+    truncate_lines_at => 200,
+    max_lines => 50,
+  );
+
+  # lsblk: compact block device listing
+  $self->register_filter(
+    parsed_command => {
+      program    => 'lsblk',
+    },
+    strip_lines_matching => [qr(^\s*$)],
+    truncate_lines_at => 150,
+    max_lines => 50,
+  );
+
+  # blkid: compact block device attributes
+  $self->register_filter(
+    parsed_command => {
+      program    => 'blkid',
+    },
+    strip_lines_matching => [qr(^\s*$)],
+    truncate_lines_at => 200,
+    max_lines => 50,
+  );
+
   # git log: compact
   $self->register_filter(
-    command => '^git\s+log\b',
+    parsed_command => {
+      program    => 'git',
+      subcommand => 'log',
+    },
     strip_lines_matching => [
       qr(^\s*$),
       qr(^commit\s+[a-f0-9]+),
@@ -472,14 +816,20 @@ sub _build_default_filters {
 
   # git branch: compact
   $self->register_filter(
-    command => '^git\s+branch\b',
+    parsed_command => {
+      program    => 'git',
+      subcommand => 'branch',
+    },
     strip_lines_matching => [qr(^\s*$)],
     max_lines => 30,
   );
 
   # git stash: compact
   $self->register_filter(
-    command => '^git\s+stash\b',
+    parsed_command => {
+      program    => 'git',
+      subcommand => 'stash',
+    },
     strip_lines_matching => [qr(^\s*$)],
     max_lines => 30,
   );
@@ -497,14 +847,23 @@ sub compress {
   my ($self, $command, $stdout, $stderr) = @_;
 
   my $matched_filter;
+  my $parsed = $self->_parse_command($command);
 
   for my $key (keys %{$self->filters}) {
     my $filter = $self->filters->{$key};
 
-    # Check if command matches
-    unless ($command =~ /$key/) {
-      next;
+    my $matches = 0;
+
+    # Check parsed_command first if present
+    if (my $pc = $filter->{parsed_command}) {
+      $matches = 1 if $self->_match_parsed_command($pc, $parsed);
     }
+    # Fall back to regex matching for legacy filters
+    elsif ($command =~ /$key/) {
+      $matches = 1;
+    }
+
+    next unless $matches;
 
     # Check output_detect if present - only apply filter if output matches
     if (my $detect = $filter->{output_detect}) {
