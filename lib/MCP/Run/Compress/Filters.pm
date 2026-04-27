@@ -1,6 +1,6 @@
 package MCP::Run::Compress::Filters;
 # ABSTRACT: Command Output Compression Reference
-our $VERSION = '0.005';
+our $VERSION = '0.101';
 =description
 
 This document lists all commands that L<MCP::Run::Compress> filters and how
