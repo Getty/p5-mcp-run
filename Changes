@@ -1,6 +1,9 @@
 Revision history for MCP-Run
 
 {{$NEXT}}
+  - Fix "Wide character in subroutine entry" in bin/mcp-run-compress
+    --hook when the Bash command contains non-ASCII characters: encode
+    the command as UTF-8 octets before base64-encoding it.
 
 0.100     2026-04-27 02:36:52Z
 
