@@ -109,6 +109,36 @@ See `MCP::Run::Compress::Filters` for the preset filter catalog.
 | `MCP_RUN_TOOL_NAME`              | Registered MCP tool name (default `run`)                   |
 | `MCP_RUN_COMPRESS_INSTALL_MODE`  | `native` (default) or `docker`. Baked to `docker` in image |
 | `MCP_RUN_COMPRESS_IMAGE`         | Image ref for docker-mode hook. Pinned to `:<version>` in image |
+| `MCP_RUN_COMPRESS_NO_CO_AUTHORED`| Set to any value to disable Co-Authored-By replacement      |
+| `CO_AUTHORED_BY`                 | Replacement value for Co-Authored-By in git commits        |
+| `ANTHROPIC_MODEL`                | Fallback for CO_AUTHORED_BY if not set                     |
+
+## Co-Authored-By replacement for git commits
+
+When `mcp-run-compress` detects a `git commit` command, it can automatically add
+or replace the `Co-Authored-By` line in the commit message. This is useful when
+using Claude Code with different AI models to track which model was used.
+
+**How it works:**
+
+- If `CO_AUTHORED_BY` or `ANTHROPIC_MODEL` is set and the commit message
+  already contains a `Co-Authored-By` line, it will be replaced with the value
+  of that env var.
+- If no `Co-Authored-By` line exists, it will be appended to the commit message.
+- To disable this feature temporarily, set `MCP_RUN_COMPRESS_NO_CO_AUTHORED=1`.
+
+**Example:**
+
+```bash
+# Set the model identifier
+export CO_AUTHORED_BY="MiniMax-M2.7"
+
+# git commit will now automatically include:
+# Co-Authored-By: MiniMax-M2.7
+
+# To temporarily disable:
+MCP_RUN_COMPRESS_NO_CO_AUTHORED=1 git commit -m "WIP"
+```
 
 ## Build the Docker image locally
 
