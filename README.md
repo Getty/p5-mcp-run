@@ -1,14 +1,80 @@
 # MCP-Run
 
-Claude Code `PreToolUse` hook that compresses `Bash` tool output with 30+
-command-specific filters (`ls`, `git`, `make`, `cargo`, `cpanm`, `kubectl`,
-`terraform`, …) so the LLM sees the essence — not 900 lines of noise. Prefix
-a command with `no-compress ` to bypass the filter for one call.
+A stdio MCP server (`mcp-run-bash`) that exposes a `run` tool: it executes
+shell commands via `bash -c` and returns exit code, stdout, and stderr —
+optionally passed through 30+ command-specific filters (`ls`, `git`, `make`,
+`cargo`, `cpanm`, `kubectl`, `terraform`, …) so the LLM sees the essence
+instead of 900 lines of noise.
 
-Also ships `MCP::Run::Bash`, a stdio MCP server with the same compression,
-for Claude Desktop and `.mcp.json`.
+Plug it into Claude Desktop, `.mcp.json`, or any MCP client.
 
-## Install with Docker (no Perl required)
+As a **bonus**, the same compression pipeline ships as a standalone Claude
+Code `PreToolUse` hook (`mcp-run-compress`) that filters output of Claude
+Code's built-in Bash tool. The hook is fully usable on its own via Docker —
+no Perl needed on the host.
+
+## Install (Perl)
+
+```bash
+cpanm MCP::Run
+```
+
+Gives you `mcp-run-bash` (the MCP server) and `mcp-run-compress` (the hook
++ installer).
+
+## Use as MCP server (mcp-run-bash)
+
+```perl
+use MCP::Run::Bash;
+
+my $server = MCP::Run::Bash->new(
+    allowed_commands  => ['ls', 'cat', 'grep', 'find'],
+    working_directory => '/var/data',
+    timeout           => 60,
+);
+$server->to_stdio;
+```
+
+Or run the binary directly — it reads config from environment variables and
+speaks MCP over stdio:
+
+```bash
+mcp-run-bash
+```
+
+Attributes: `allowed_commands` (whitelist, default: all), `working_directory`
+(default: cwd), `timeout` (default: 30s), `compress` (default: off in the
+module, on in `bin/mcp-run-bash`), `tool_name` (default: `run`),
+`tool_description`.
+
+Tool input schema:
+
+```json
+{
+  "command": "ls -la",
+  "working_directory": "/tmp",
+  "timeout": 10,
+  "compress": false
+}
+```
+
+When `compress` is enabled, the original command is fed into the filter
+pipeline so command-specific rules (e.g. `git status`, `make`, `kubectl`)
+match. See `MCP::Run::Compress::Filters` for the preset catalog.
+
+## Bonus: PreToolUse hook for Claude Code (mcp-run-compress)
+
+Same compression pipeline, but installed as a Claude Code hook so it
+filters output of the built-in `Bash` tool.
+
+### With Perl already installed
+
+```bash
+cpanm MCP::Run
+mcp-run-compress --install-claude
+```
+
+### Without Perl, via Docker
 
 ```bash
 docker run --rm \
@@ -16,19 +82,12 @@ docker run --rm \
     raudssus/mcp-run-compress --install-claude
 ```
 
-That's it. Patches `~/.claude/settings.json` and drops a bypass-skill into
+Patches `~/.claude/settings.json` and drops a bypass-skill into
 `~/.claude/skills/`. Host only needs `bash`, `mktemp`, `base64`, `docker`.
 
-## Install with Perl
+Prefix any command with `no-compress ` to bypass the filter for one call.
 
-```bash
-cpanm MCP::Run
-mcp-run-compress --install-claude
-```
-
-Same result, no Docker startup per Bash call.
-
-## How the Docker install works
+### How the Docker install works
 
 The hook needs two things from two different worlds:
 
@@ -72,31 +131,6 @@ unset. No detection heuristic; the image marks itself.
 The image also bakes `MCP_RUN_COMPRESS_IMAGE=raudssus/mcp-run-compress:<version>`,
 so the hook is pinned to the exact version that installed it. Upgrades
 are explicit: `docker pull … && … --install-claude` again.
-
-## Library use (MCP::Run::Bash)
-
-```perl
-use MCP::Run::Bash;
-
-my $server = MCP::Run::Bash->new(
-    allowed_commands  => ['ls', 'cat', 'grep', 'find'],
-    working_directory => '/var/data',
-    timeout           => 60,
-);
-$server->to_stdio;
-```
-
-Attributes: `allowed_commands` (whitelist, default: all), `working_directory`
-(default: cwd), `timeout` (default: 30s), `tool_name` (default: `run`),
-`tool_description`.
-
-Tool input schema:
-
-```json
-{ "command": "ls -la", "working_directory": "/tmp", "timeout": 10 }
-```
-
-See `MCP::Run::Compress::Filters` for the preset filter catalog.
 
 ## Environment variables
 

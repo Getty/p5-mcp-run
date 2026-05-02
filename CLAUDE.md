@@ -2,20 +2,22 @@
 
 MCP-Run bietet zwei Produkte:
 
-1. **mcp-run-compress** (primär) – Ein Claude Code PreToolUse Hook, der die
-   Bash-Tool-Ausgabe mit 30+ command-spezifischen Filtern komprimiert. Das ist
-   der Haupt-Use-Case (siehe README, Docker-Image heisst `raudssus/mcp-run-compress`).
-2. **mcp-run-bash** (sekundär) – Ein stdio MCP-Server mit einem `run`-Tool, der
-   Shell-Commands via `bash -c` ausführt und dieselbe Compression-Pipeline
-   anbietet. Für Claude Desktop und `.mcp.json`.
+1. **mcp-run-bash** (primär) – Ein stdio MCP-Server mit einem `run`-Tool, der
+   Shell-Commands via `bash -c` ausführt und mit 30+ command-spezifischen
+   Filtern komprimierte Ausgabe liefert. Für Claude Desktop, `.mcp.json` und
+   andere MCP-Clients. Das ist das Hauptprodukt.
+2. **mcp-run-compress** (Bonus) – Ein Claude Code PreToolUse Hook, der dieselbe
+   Compression-Pipeline auf das eingebaute Bash-Tool von Claude Code anwendet.
+   Praktisch: durch das Docker-Image (`raudssus/mcp-run-compress`) ist der Hook
+   auch ohne Perl-Toolchain auf dem Host installierbar.
 
 ## Projektstruktur
 
 ```
 p5-mcp-run/
 ├── bin/
-│   ├── mcp-run-compress   # PreToolUse Hook + Installer (PRIMÄR)
-│   └── mcp-run-bash       # MCP stdio Server (SEKUNDÄR)
+│   ├── mcp-run-bash       # MCP stdio Server (PRIMÄR)
+│   └── mcp-run-compress   # PreToolUse Hook + Installer (BONUS)
 ├── lib/
 │   └── MCP/
 │       ├── Run.pm         # Basis-Server mit run-Tool
@@ -36,29 +38,7 @@ dzil build              # Distribution bauen
 dzil test               # Test mit dzil
 ```
 
-## mcp-run-compress (primär)
-
-Claude Code PreToolUse Hook für das Bash-Tool.
-
-**Modi:**
-- `native` (default): Hook ist `mcp-run-compress --hook`, rewrite zu `--b64`
-- `docker`: Hook ist `docker run ... --hook`, host-seitiges Pipe-Snippet
-
-**Env-Vars:**
-| Variable | Default | Beschreibung |
-|----------|---------|-------------|
-| `MCP_RUN_COMPRESS_INSTALL_MODE` | native | native oder docker |
-| `MCP_RUN_COMPRESS_IMAGE` | raudssus/mcp-run-compress:latest | Docker Image (pinned in image) |
-| `MCP_RUN_COMPRESS_NO_CO_AUTHORED` | - | Co-Authored-By deaktivieren |
-| `CO_AUTHORED_BY` | - | Replacement für Co-Authored-By |
-| `ANTHROPIC_MODEL` | - | Fallback für CO_AUTHORED_BY |
-
-**Bypass:**
-- `no-compress <cmd>` – einzelne Command ohne Compression
-- Background Commands werden nicht umgeschrieben
-- Commands mit `mcp-run-compress` werden nicht umgeschrieben
-
-## mcp-run-bash (sekundär)
+## mcp-run-bash (primär)
 
 Einstieg: `mcp-run-bash` oder `MCP::Run::Bash->run_stdio`.
 
@@ -79,6 +59,30 @@ command-spezifische Filter (ls, git, make, …) im MCP-Server-Modus greifen.
 ```json
 { "command": "ls -la", "working_directory": "/tmp", "timeout": 10, "compress": false }
 ```
+
+## mcp-run-compress (Bonus)
+
+Claude Code PreToolUse Hook für das eingebaute Bash-Tool. Wendet dieselbe
+Compression-Pipeline auf Bash-Output von Claude Code an. Standalone via Docker
+installierbar (`raudssus/mcp-run-compress`) — kein Perl auf dem Host nötig.
+
+**Modi:**
+- `native` (default): Hook ist `mcp-run-compress --hook`, rewrite zu `--b64`
+- `docker`: Hook ist `docker run ... --hook`, host-seitiges Pipe-Snippet
+
+**Env-Vars:**
+| Variable | Default | Beschreibung |
+|----------|---------|-------------|
+| `MCP_RUN_COMPRESS_INSTALL_MODE` | native | native oder docker |
+| `MCP_RUN_COMPRESS_IMAGE` | raudssus/mcp-run-compress:latest | Docker Image (pinned in image) |
+| `MCP_RUN_COMPRESS_NO_CO_AUTHORED` | - | Co-Authored-By deaktivieren |
+| `CO_AUTHORED_BY` | - | Replacement für Co-Authored-By |
+| `ANTHROPIC_MODEL` | - | Fallback für CO_AUTHORED_BY |
+
+**Bypass:**
+- `no-compress <cmd>` – einzelne Command ohne Compression
+- Background Commands werden nicht umgeschrieben
+- Commands mit `mcp-run-compress` werden nicht umgeschrieben
 
 ## Architektur
 
