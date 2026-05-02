@@ -180,4 +180,27 @@ subtest 'on_empty fallback' => sub {
   done_testing;
 };
 
+subtest 'transform_command Co-Authored-By override' => sub {
+  local $ENV{ANTHROPIC_MODEL} = 'MiniMax-M2.7';
+  delete local $ENV{CO_AUTHORED_BY};
+  delete local $ENV{MCP_RUN_COMPRESS_NO_CO_AUTHORED};
+
+  my $c = MCP::Run::Compress->new;
+
+  my $heredoc = qq{git commit -m "\$(cat <<EOF\nfix bug\n\nCo-Authored-By: Claude Opus <noreply\@anthropic.com>\nEOF\n)"};
+  like $c->transform_command($heredoc), qr/Co-Authored-By: MiniMax-M2\.7\nEOF/, 'heredoc form replaced';
+
+  my $no_signature = qq{git commit -m "fix bug"};
+  like $c->transform_command($no_signature), qr/Co-Authored-By: MiniMax-M2\.7/, 'signature added when missing';
+
+  local $ENV{MCP_RUN_COMPRESS_NO_CO_AUTHORED} = 1;
+  is $c->transform_command($heredoc), $heredoc, 'opt-out env disables transform';
+
+  my $non_git = q{ls -l};
+  delete local $ENV{MCP_RUN_COMPRESS_NO_CO_AUTHORED};
+  is $c->transform_command($non_git), $non_git, 'non-git commands untouched';
+
+  done_testing;
+};
+
 done_testing;

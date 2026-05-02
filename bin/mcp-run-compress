@@ -71,6 +71,7 @@ sub run_hook {
   }
 
   unless ($bypass) {
+    $cmd = MCP::Run::Compress->new->transform_command($cmd);
     my $encoded  = encode_base64( encode_utf8($cmd), '' );
     my $rewrite  = install_mode() eq 'docker'
       ? docker_pipe_rewrite($encoded)
