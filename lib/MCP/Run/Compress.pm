@@ -835,12 +835,11 @@ sub _build_default_filters {
     max_lines => 30,
   );
 
-  # git commit: transform Co-Authored-By
+  # git commit: transform Co-Authored-By. Match the raw string so we
+  # also catch compound commands like `cd foo && git add bar && git
+  # commit -m "..."`, where the parsed top-level program isn't `git`.
   $self->register_filter(
-    parsed_command => {
-      program    => 'git',
-      subcommand => 'commit',
-    },
+    command => '\bgit\b[^&|;]*?(?<![=])\bcommit\b',
     command_transform => sub {
       my ($cmd) = @_;
       my $model = $ENV{CO_AUTHORED_BY} || $ENV{ANTHROPIC_MODEL};

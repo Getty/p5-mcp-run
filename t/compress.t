@@ -200,6 +200,15 @@ subtest 'transform_command Co-Authored-By override' => sub {
   delete local $ENV{MCP_RUN_COMPRESS_NO_CO_AUTHORED};
   is $c->transform_command($non_git), $non_git, 'non-git commands untouched';
 
+  my $compound = qq{cd /tmp && git add foo && git commit -m "\$(cat <<'EOF'\nfix bug\n\nCo-Authored-By: Claude Opus <noreply\@anthropic.com>\nEOF\n)" && git log -1};
+  like $c->transform_command($compound), qr/Co-Authored-By: MiniMax-M2\.7\nEOF/, 'compound command with git commit replaced';
+
+  my $with_flags = qq{git -c user.email=x\@y -c user.name=Foo commit -m "fix\n\nCo-Authored-By: Claude Opus <noreply\@anthropic.com>"};
+  like $c->transform_command($with_flags), qr/Co-Authored-By: MiniMax-M2\.7/, 'git -c flags between git and commit replaced';
+
+  my $across_separator = q{git status; git log --grep=commit -m "fix"};
+  is $c->transform_command($across_separator), $across_separator, 'pattern does not cross command separators';
+
   done_testing;
 };
 
