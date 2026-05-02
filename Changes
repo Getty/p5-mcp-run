@@ -1,6 +1,6 @@
 Revision history for MCP-Run
 
-{{$NEXT}}
+0.102     2026-05-02 03:19:04Z
   - Pass the original command through to the compressor in
     MCP::Run::format_result so command-specific filters (ls, git,
     make, …) match when mcp-run-bash runs with compression enabled.
