@@ -175,7 +175,7 @@ sub _handle_run ($self, $tool, $args) {
   my $compress = $args->{compress}         // $self->compress;
 
   my $result = $self->execute($command, $wd, $timeout);
-  return $self->format_result($tool, $result, $compress);
+  return $self->format_result($tool, $result, $compress, $command);
 }
 
 sub run_stdio ($class_or_self, %args) {
@@ -224,7 +224,7 @@ See L<MCP::Run::Bash> for the reference implementation.
 
 =cut
 
-sub format_result ($self, $tool, $result, $compress = undef) {
+sub format_result ($self, $tool, $result, $compress = undef, $command = '') {
   my $exit_code = $result->{exit_code} // -1;
   my $stdout    = $result->{stdout}    // '';
   my $stderr    = $result->{stderr}    // '';
@@ -234,7 +234,7 @@ sub format_result ($self, $tool, $result, $compress = undef) {
 
   if ($compress) {
     (my $compressor) = $self->_get_compressor;
-    ($stdout, $stderr) = $compressor->compress('', $stdout, $stderr);
+    ($stdout, $stderr) = $compressor->compress($command, $stdout, $stderr);
   }
 
   my $text = "Exit code: $exit_code\n";
