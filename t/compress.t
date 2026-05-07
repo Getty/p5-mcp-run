@@ -191,7 +191,14 @@ subtest 'transform_command Co-Authored-By override' => sub {
   like $c->transform_command($heredoc), qr/Co-Authored-By: MiniMax-M2\.7\nEOF/, 'heredoc form replaced';
 
   my $no_signature = qq{git commit -m "fix bug"};
-  like $c->transform_command($no_signature), qr/Co-Authored-By: MiniMax-M2\.7/, 'signature added when missing';
+  my $signed = $c->transform_command($no_signature);
+  like $signed, qr/Co-Authored-By: MiniMax-M2\.7/, 'signature added when missing';
+  like $signed, qr/Co-Authored-By: MiniMax-M2\.7"\z/, 'signature stays inside the closing quote';
+
+  my $multiline = qq{git commit -m "docs: rewrite README\nreferencing Manual::Migration"};
+  my $multiline_signed = $c->transform_command($multiline);
+  like $multiline_signed, qr/Co-Authored-By: MiniMax-M2\.7"\z/, 'multi-line message: signature stays inside the closing quote';
+  unlike $multiline_signed, qr/"\s*\n\s*\n\s*Co-Authored-By/, 'multi-line message: no Co-Authored-By outside the quoted string';
 
   local $ENV{MCP_RUN_COMPRESS_NO_CO_AUTHORED} = 1;
   is $c->transform_command($heredoc), $heredoc, 'opt-out env disables transform';

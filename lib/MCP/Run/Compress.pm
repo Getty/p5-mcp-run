@@ -847,7 +847,10 @@ sub _build_default_filters {
       if ($cmd =~ /Co-Authored-By:/i) {
         $cmd =~ s/Co-Authored-By: [^\n]+/Co-Authored-By: $model/g;
       } else {
-        $cmd =~ s/(")\s*$/$1\n\nCo-Authored-By: $model/m;
+        # Inject inside the closing quote, otherwise the Co-Authored-By
+        # line ends up as a separate shell command and `<model@host>`
+        # parses as a redirection, breaking the whole call.
+        $cmd =~ s/(")\s*$/\n\nCo-Authored-By: $model$1/m;
       }
       return $cmd;
     },

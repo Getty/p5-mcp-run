@@ -1,6 +1,11 @@
 Revision history for MCP-Run
 
 {{$NEXT}}
+  - Fix MCP::Run::Compress->transform_command injecting Co-Authored-By
+    *outside* the closing quote when the original git commit had no
+    signature, which made bash run the model line as a separate command
+    and choke on `<model@host>` as a redirection. The signature now
+    lands inside the quoted commit message where it belongs.
 
 0.102     2026-05-02 03:19:04Z
   - Pass the original command through to the compressor in
