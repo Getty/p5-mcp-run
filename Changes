@@ -1,5 +1,7 @@
 Revision history for MCP-Run
 
+{{$NEXT}}
+
 0.103     2026-05-07 13:28:39Z
   - Fix MCP::Run::Compress->transform_command injecting Co-Authored-By
     *outside* the closing quote when the original git commit had no

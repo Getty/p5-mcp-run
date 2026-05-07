@@ -1,5 +1,5 @@
 package MCP::Run;
-our $VERSION = '0.103';
+our $VERSION = '0.104';
 use Mojo::Base 'MCP::Server', -signatures;
 
 # ABSTRACT: MCP server with a command execution tool
