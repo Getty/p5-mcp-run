@@ -181,7 +181,7 @@ dzil build
 VERSION=$(perl -Ilib -MMCP::Run -E 'say $MCP::Run::VERSION')
 docker build \
   --build-arg MCP_RUN_VERSION=$VERSION \
-  --target runtime \
+  --target compress \
   -t raudssus/mcp-run-compress:$VERSION \
   -t raudssus/mcp-run-compress:latest \
   MCP-Run-$VERSION
@@ -189,17 +189,16 @@ docker build \
 
 ## Release (maintainer)
 
-`dzil release` uploads to CPAN, then `maint/release-after.pl` creates the
-matching GitHub release, `docker build`s, and `docker push`es both
-`:VERSION` and `:latest` to Docker Hub.
+`dzil release` uploads to CPAN. The `[@Author::GETTY]` bundle then publishes
+the matching GitHub release (with the CPAN tarball attached) and builds and
+pushes the Docker image `raudssus/mcp-run-compress` to Docker Hub, tagged
+`:latest`, `:0` (major), and `:<VERSION>` (the bundle's `latest %V %v`).
 
 ```bash
 dzil release
-# extra build flags:
-MCP_RUN_DOCKER_BUILD_ARGS='--platform linux/amd64,linux/arm64' dzil release
 ```
 
-Needs `docker login` and `gh auth login`.
+Needs `~/.github-identity` (for the GitHub release) and `docker login`.
 
 ## License
 
