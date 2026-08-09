@@ -1,0 +1,15 @@
+---
+class: standard
+completed: 2026-08-09
+created: 2026-08-09T03:24:32Z
+id: 5
+priority: medium
+status: done
+tags:
+- test
+- compression
+title: End-to-end MCP compression with real command context
+updated: 2026-08-09T22:28:32Z
+---
+
+When MCP-Run server gets compress=true with a real command (ls, git, make, …), do command-specific filters match end-to-end? Currently unverified — needs an integration test that goes through format_result($tool,$result,$compress,$command) with a real $command string.
