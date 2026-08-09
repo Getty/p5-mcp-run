@@ -1,0 +1,15 @@
+---
+class: standard
+completed: 2026-08-09
+created: 2026-08-09T03:23:09Z
+id: 1
+priority: medium
+status: done
+tags:
+- test
+- hook
+title: Cover bin/mcp-run-compress --hook with tests
+updated: 2026-08-09T22:28:05Z
+---
+
+PreToolUse JSON for bin/mcp-run-compress --hook is currently uncovered. Use a temp ~/.claude/settings.json fixture, never the real one. Tracked as gap in CLAUDE.md.
