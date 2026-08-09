@@ -1,5 +1,7 @@
 Revision history for MCP-Run
 
+{{$NEXT}}
+
 0.104     2026-08-09 18:57:54Z
   - Fix "Use of uninitialized value in join or string" warning from
     MCP::Run::Compress::compress/process when a transform coderef
