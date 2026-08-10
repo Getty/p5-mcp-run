@@ -186,9 +186,8 @@ principle and lane are in `.claude/rules/mcp-run-rules.md`.
 
 | Task | Agent |
 |---|---|
-| Implement / refactor / debug behavior-relevant code | `mcp-run-worker` (default) |
-| Pre-release audit | `mcp-run-release-checker` |
+| Implement / refactor / debug behavior-relevant code | `mcp-run-worker` |
 
-The agents carry their skills via `briefing.skills` (see `.claude/agents/`); the main
+The agent carries its skills via `briefing.skills` (see `.claude/agents/`); the main
 agent delegates rather than loading them. Skill sources live under `.claude/skills/`.
 The karr board (`refs/karr/*`) is the internal coordination channel.
