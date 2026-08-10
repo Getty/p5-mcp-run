@@ -1,5 +1,7 @@
 Revision history for MCP-Run
 
+{{$NEXT}}
+
 0.105     2026-08-10 16:59:50Z
   - Migrate the release process fully into the [@Author::GETTY] bundle
     and drop the hand-rolled maint/release-after.pl. Its
