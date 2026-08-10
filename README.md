@@ -139,9 +139,9 @@ are explicit: `docker pull … && … --install-claude` again.
 | `MCP_RUN_ALLOWED_COMMANDS`       | Comma-separated whitelist for `mcp-run-bash`               |
 | `MCP_RUN_WORKING_DIRECTORY`      | Default cwd for `mcp-run-bash`                             |
 | `MCP_RUN_TIMEOUT`                | Default timeout (seconds) for `mcp-run-bash`               |
-| `MCP_RUN_COMPRESS`               | `0` disables compression in `mcp-run-bash`                 |
+| `MCP_RUN_COMPRESS`               | `0`/`false`/`no`/`off` disables compression in `mcp-run-bash` (default: enabled). `1`/`true`/`yes`/`on` forces it on. Case-insensitive. Overridable per-call via the tool's `compress` argument. |
 | `MCP_RUN_TOOL_NAME`              | Registered MCP tool name (default `run`)                   |
-| `MCP_RUN_COMPRESS_INSTALL_MODE`  | `native` (default) or `docker`. Baked to `docker` in image |
+| `MCP_RUN_COMPRESS_INSTALL_MODE`  | `native` (default) or `docker`. The shipped Docker image bakes `docker`; native Perl installs leave it unset. Overrides both the hook command `mcp-run-compress --install-claude` writes and the rewrite `--hook` emits. |
 | `MCP_RUN_COMPRESS_IMAGE`         | Image ref for docker-mode hook. Pinned to `:<version>` in image |
 | `MCP_RUN_COMPRESS_NO_CO_AUTHORED`| Set to any value to disable Co-Authored-By replacement      |
 | `CO_AUTHORED_BY`                 | Replacement value for Co-Authored-By in git commits        |
