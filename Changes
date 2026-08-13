@@ -71,7 +71,12 @@ Revision history for MCP-Run
     written into the git config value (corrupting it) instead of the
     commit message. The injection now lands after the closing quote of
     the commit's own -m/--message argument; commands without one (e.g.
-    `git commit --amend` opening the editor) are left alone.
+    `git commit --amend` opening the editor) are left alone. The flag
+    match also covers bundled short options ending in the message flag
+    (`git commit -am "..."`, -sm, -anm), which contain no literal `-m`
+    and had lost the trailer entirely; the flag must now start an
+    argument, so a `-m` inside a value like /tmp/msg-m is no longer
+    mistaken for it.
   - Fix the same transform's replacement path swallowing the closing
     quote: s/Co-Authored-By: [^\n]+/.../g matched the quote too when
     the trailer ended a -m "..." message, leaving the shell with an

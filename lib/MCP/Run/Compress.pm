@@ -867,7 +867,14 @@ sub _build_default_filters {
         $tail =~ s/^.*\bgit\b[^&|;]*?(?<![=])\bcommit\b//;
         my $origin = length($cmd) - length($tail);
         $tail =~ s/[&|;].*$//;
-        if ( $tail =~ /^(.*(?:-m|--message)\s+")((?:[^"\\]|\\.)*)(")/ ) {
+        # -[a-zA-Z]*m covers bundled short flags whose last letter is the
+        # message flag (-am, -sm, -anm), not just a bare -m. The lookbehind
+        # requires the dash to start an argument -- \b can't do that, since
+        # `-` is not a word character, so \b- never matches after a space.
+        # Without it, a path like /tmp/msg-m "x" would look like a flag.
+        if ( $tail
+          =~ /^(.*(?<![^\s])(?:--message|-[a-zA-Z]*m)\s+")((?:[^"\\]|\\.)*)(")/ )
+        {
           substr( $cmd, $origin + length($1) + length($2), 0 )
             = "\n\nCo-Authored-By: $model";
         }
