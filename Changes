@@ -64,6 +64,20 @@ Revision history for MCP-Run
     already fixed in 0.104 by passing MCP::Server::Context instances
     instead of raw hashrefs, and is not reproducible since. The
     smoker report predates that release.
+  - Fix mcp-run-compress injecting the Co-Authored-By trailer into the
+    wrong quote. The git-commit transform targeted the last double quote
+    of the whole command line, so a compound command like
+    `git commit -m "x" && git config user.name "y"` had the trailer
+    written into the git config value (corrupting it) instead of the
+    commit message. The injection now lands after the closing quote of
+    the commit's own -m/--message argument; commands without one (e.g.
+    `git commit --amend` opening the editor) are left alone.
+  - Fix the same transform's replacement path swallowing the closing
+    quote: s/Co-Authored-By: [^\n]+/.../g matched the quote too when
+    the trailer ended a -m "..." message, leaving the shell with an
+    unterminated string. The character class now stops at the quote
+    ([^\n"]+), so replacing an existing Co-Authored-By line keeps the
+    message intact.
 
 0.105     2026-08-10 16:59:50Z
   - Migrate the release process fully into the [@Author::GETTY] bundle
