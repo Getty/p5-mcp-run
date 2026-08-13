@@ -1,0 +1,26 @@
+---
+class: standard
+completed: 2026-08-13T04:55:34Z
+created: 2026-08-13T04:48:28Z
+id: 6
+priority: high
+started: 2026-08-13T04:55:34Z
+status: done
+title: 'MCP 0.15 compat: t/20-integration.t bricht (GH #1, #2)'
+updated: 2026-08-13T04:55:34Z
+---
+
+Zwei Smoker-Reports von eserte:
+
+- GH #2 (2026-08-11): alle 4 Subtests von t/20-integration.t fallen mit MCP 0.15 um. Schluesselhinweis: 'Missing protocol version' statt 'not found' im unknown-tool-Test => 0.15 verlangt striktere protocolVersion im initialize-Handshake.
+- GH #1 (2026-06-28): 'Can t call method has_scope on unblessed reference' in MCP/Server.pm:189, laut Smoker ab MCP 0.12/0.13. Lokal mit MCP 0.13 NICHT reproduzierbar (Suite gruen) => umgebungsabhaengig oder implizit gefixt, muss geklaert werden.
+
+ENTSCHEIDUNG Maintainer (2026-08-13): MCP-Mindestversion wird im cpanfile gepinnt
+(bisher 'requires MCP;' ohne Version), KEINE Kompatibilitaetsweichen fuer aeltere
+MCP-Versionen. Kein $MCP::VERSION-Vergleich, kein Dual-Path in Code oder Test.
+Dass die Suite danach mit MCP 0.13 nicht mehr laeuft, ist gewollt und wird vom
+Prereq ausgedrueckt -- keine Regression.
+
+Delegiert an mcp-run-worker: reproduzieren mit MCP 0.15 in isoliertem local::lib,
+root-cause, geradliniger Fix gegen die neue API, Regressionstest, Changes-Eintrag
+mit Verweis auf GH #1/#2. KEIN Release, KEINE GitHub-Aktion.
