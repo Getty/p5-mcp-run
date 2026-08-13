@@ -1,0 +1,49 @@
+---
+claimed_at: 2026-08-13T15:31:37Z
+claimed_by: mcp-run-worker
+class: standard
+completed: 2026-08-13T15:31:37Z
+created: 2026-08-13T04:59:57Z
+id: 8
+priority: critical
+started: 2026-08-13T15:31:37Z
+status: done
+title: 'KRITISCH: mcp-run-bash crasht bei jedem tools/call (MCP::Run::Compress nie
+  geladen)'
+updated: 2026-08-13T15:31:37Z
+---
+
+GELOEST in a8f91ed.
+
+Root cause: lib/MCP/Run.pm rief MCP::Run::Compress->new auf, ohne dass die
+Klasse irgendwo unter lib/ geladen wurde. bin/mcp-run-bash setzt compress => 1
+unbedingt, also starb jeder tools/call in der Default-Konfiguration. Unter MCP
+0.13 starb der Serverprozess komplett ohne Antwort, unter 0.15 fing MCP::Servers
+eval das ab und der Client bekam -32603 Internal error. MCP_RUN_COMPRESS=0 war
+die einzige funktionierende Konfiguration -- deshalb hat es so lange ueberlebt.
+
+Fix: 'use MCP::Run::Compress' in MCP::Run (compile time), nicht 'require' im
+Lazy-Loader. Kein Zirkelbezug (Compress.pm referenziert nichts aus MCP::Run).
+Die relevante Laziness bleibt erhalten: die Filtertabelle wird in new() gebaut,
+das $_compressor-Singleton verzoegert das weiterhin. Compile-time-Load kauft
+den besseren Fehlermodus -- Startup statt mitten in der Session.
+
+Regressionstest t/50-bash-bin.t: faehrt bin/mcp-run-bash als Subprozess ueber
+echtes stdio. Notwendig, weil das compress-Attribut im Modul per Default OFF ist
+und alle bestehenden Tests die Klassen in-process instanziieren -- das laedt
+Compress selbst und verdeckt den fehlenden Load in lib/. Vor dem Fix rot,
+danach gruen, beides verifiziert.
+
+Zusaetzlich abgesichert: der ls-Filter muss die Listung sichtbar zu
+'- README.md' zusammenfalten, gepaart gegen einen MCP_RUN_COMPRESS=0-Lauf, der
+die rohe Langlistung behalten muss. Ohne diese Paarung liesse sich der Crash
+'beheben', indem man Compression still abschaltet -- die beiden
+unlike-Assertions allein liefen auf dem kaputten Stand vacuously gruen.
+
+Im selben Commit (Maintainer-Freigabe waehrend der Arbeit): serverInfo meldet
+jetzt mcp-run-bash / $VERSION statt MCP::Servers PerlServer / 1.0.0. Defaults
+liegen auf MCP::Run::Bash, nicht im bin-Skript, damit auch Library-Nutzer
+korrekt identifiziert werden. Assertions in t/10-bash.t (Klassen-Default,
+pinnt die Platzierung) und t/50-bash-bin.t (echter Auslieferungspfad).
+
+prove -lr t/ gegen MCP 0.15: 8 Files, 62 Tests, PASS.
