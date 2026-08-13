@@ -4,6 +4,10 @@ use Test::More;
 
 use MCP::Run::Bash;
 use MCP::Server::Context ();
+# Mirrors the cpanfile pin. Prereqs are install-time metadata only, so a stale
+# MCP in @INC reaches prove untouched — without this the run dies with three
+# "not exported by MCP::Constants" errors instead of naming the real cause.
+use MCP 0.15;
 use MCP::Constants qw(INVALID_PARAMS META_CLIENT_CAPABILITIES META_PROTOCOL_VERSION META_SERVER_INFO),
   qw(PROTOCOL_VERSION);
 
