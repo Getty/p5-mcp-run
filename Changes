@@ -1,5 +1,7 @@
 Revision history for MCP-Run
 
+{{$NEXT}}
+
 0.106     2026-08-13 18:19:29Z
   - Fix mcp-run-bash dying on every tools/call in its default
     configuration. MCP::Run::format_result calls

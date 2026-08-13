@@ -1,5 +1,5 @@
 package MCP::Run;
-our $VERSION = '0.106';
+our $VERSION = '0.107';
 use Mojo::Base 'MCP::Server', -signatures;
 
 use MCP::Run::Compress;
