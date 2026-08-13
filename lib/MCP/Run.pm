@@ -2,6 +2,8 @@ package MCP::Run;
 our $VERSION = '0.106';
 use Mojo::Base 'MCP::Server', -signatures;
 
+use MCP::Run::Compress;
+
 # ABSTRACT: MCP server with a command execution tool
 
 =head1 SYNOPSIS
@@ -246,6 +248,11 @@ sub format_result ($self, $tool, $result, $compress = undef, $command = '') {
   return $tool->text_result($text, $is_error);
 }
 
+# Lazily constructed, and shared: building the default filter table is the
+# expensive part, and it is identical for every server instance. The class
+# itself is loaded at compile time (see the use above) so a broken or missing
+# MCP::Run::Compress fails at server startup rather than mid-session on the
+# first tools/call.
 my $_compressor;
 
 sub _get_compressor ($self) {

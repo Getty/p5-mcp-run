@@ -35,6 +35,26 @@ use IO::Select;
 use Symbol 'gensym';
 use POSIX   ':sys_wait_h';
 
+has name => 'mcp-run-bash';
+
+=attr name
+
+Server name reported to the MCP client in C<serverInfo>. Defaults to
+C<mcp-run-bash>, overriding the C<PerlServer> default inherited from
+L<MCP::Server>. Pass C<name> to the constructor to identify as something else.
+
+=cut
+
+has version => $VERSION;
+
+=attr version
+
+Server version reported to the MCP client in C<serverInfo>. Defaults to this
+distribution's version, overriding the C<1.0.0> default inherited from
+L<MCP::Server>.
+
+=cut
+
 sub execute ($self, $command, $working_directory, $timeout) {
   my $full_command = $command;
   if (defined $working_directory && length $working_directory) {

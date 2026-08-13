@@ -1,6 +1,30 @@
 Revision history for MCP-Run
 
 {{$NEXT}}
+  - Fix mcp-run-bash dying on every tools/call in its default
+    configuration. MCP::Run::format_result calls
+    MCP::Run::Compress->new, but nothing under lib/ ever loaded that
+    class, and bin/mcp-run-bash enables compression unconditionally.
+    Every tools/call therefore hit "Can't locate object method new via
+    package MCP::Run::Compress": under MCP 0.13 the server process
+    died outright without answering, under 0.15 the client got
+    -32603 Internal error. MCP::Run now loads MCP::Run::Compress at
+    compile time, so a broken or missing compressor fails at server
+    startup instead of mid-session. MCP_RUN_COMPRESS=0 was the only
+    working configuration and is why the bug survived this long.
+  - Add t/50-bash-bin.t, driving bin/mcp-run-bash as a subprocess over
+    real stdio. None of the seven existing test files could have
+    caught the above: the compress attribute defaults to off in the
+    module, and every test instantiated the classes in-process, which
+    loads MCP::Run::Compress and papers over the missing load. Only a
+    fresh interpreter running the shipped script sees it. The test
+    also asserts that the ls filter visibly rewrites the listing, so
+    the crash cannot be "fixed" by quietly disabling compression.
+  - Report mcp-run-bash and the distribution version in serverInfo
+    instead of MCP::Server's PerlServer / 1.0.0 defaults. The defaults
+    live on MCP::Run::Bash rather than in bin/mcp-run-bash, so library
+    users are identified correctly too; passing name/version to the
+    constructor still overrides them.
   - Require MCP 0.15 and rework t/20-integration.t for its protocol
     handling, fixing the smoker failures reported in GH #2. MCP 0.15
     made the protocol revision part of every request: params._meta
