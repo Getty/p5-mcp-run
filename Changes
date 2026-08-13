@@ -1,6 +1,35 @@
 Revision history for MCP-Run
 
 {{$NEXT}}
+  - Require MCP 0.15 and rework t/20-integration.t for its protocol
+    handling, fixing the smoker failures reported in GH #2. MCP 0.15
+    made the protocol revision part of every request: params._meta
+    must carry io.modelcontextprotocol/protocolVersion (checked
+    against MCP::Constants::SUPPORTED_VERSIONS) and
+    io.modelcontextprotocol/clientCapabilities, or MCP::Server
+    rejects the request with "Missing protocol version" before
+    dispatch. The test built a bare MCP::Server::Context and sent no
+    _meta, so all four subtests failed. Only the test was wrong —
+    MCP::Run does no protocol handling, and real clients are
+    unaffected because the stdio transport negotiates the revision
+    itself via MCP::Server::Legacy.
+  - Follow the two 0.15 renames in the same test: the 'initialize'
+    handshake became 'server/discover', and serverInfo moved out of
+    the result body into result._meta, where it now accompanies every
+    response. Assertions on server name, version, tool surface and
+    execution are unchanged.
+  - Add a 'protocol contract' subtest pinning both rejection paths
+    (missing _meta, unsupported protocol revision) so a future
+    protocol change fails with a legible message instead of
+    scattering failures across every other subtest. The protocol
+    revision is taken from MCP::Constants rather than hardcoded.
+  - Pin the MCP prereq in cpanfile (was unversioned, which is why the
+    smokers kept pulling the latest release). The suite targets the
+    0.15 API only; there is no compatibility path back to 0.13.
+  - GH #1 ("Can't call method has_scope on unblessed reference") was
+    already fixed in 0.104 by passing MCP::Server::Context instances
+    instead of raw hashrefs, and is not reproducible since. The
+    smoker report predates that release.
 
 0.105     2026-08-10 16:59:50Z
   - Migrate the release process fully into the [@Author::GETTY] bundle
