@@ -1,0 +1,92 @@
+---
+claimed_at: 2026-08-15T08:29:38Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T08:29:38Z
+created: 2026-08-15T08:12:33Z
+id: 26
+priority: low
+started: 2026-08-15T08:17:06Z
+status: done
+title: PreToolUse-Selbstbypass unterdrueckt Co-Authored-By
+updated: 2026-08-15T08:29:38Z
+---
+
+Gefunden beim Umbau #9, umgesetzt in derselben Session (0a4d56b3).
+
+Der Selbstbypass im PreToolUse-Teil von bin/mcp-run-compress war breit:
+
+    $cmd =~ /\bmcp-run-compress\b/
+
+Seit dem Umbau schreibt PreToolUse die Command nicht mehr um. Der Bypass hat
+damit kein Re-Wrapping mehr abgeschaltet, sondern den Co-Authored-By-Trailer:
+
+    git commit -m "Fix mcp-run-compress hook"   -> KEIN Trailer
+
+Still, ohne Hinweis, und in genau diesem Repo der Normalfall. Zweiter Fall
+derselben Kopplung: "no-compress git commit -m ..." uebersprang
+transform_command mit, obwohl no-compress "Ausgabe nicht komprimieren" heisst
+und nicht "Commit-Policy aus".
+
+ERLEDIGT. pre_tool_use_response trennt jetzt beide Anliegen:
+
+  * Compression-Steuerung: no-compress-Praefix und Background-Check. Ersteres
+    wird gestrippt und als Markerzeile angehaengt, Letzteres unterdrueckt die
+    Markierung (Background-Output erreicht PostToolUse nie als Tool-Output,
+    der Marker haette dort niemanden zu informieren).
+  * Commit-Policy: transform_command laeuft fuer JEDE Command, mit genau
+    einem Schalter, MCP_RUN_COMPRESS_NO_CO_AUTHORED, den transform_command
+    selbst auswertet.
+
+Reihenfolge: Praefix strippen -> transform_command -> Marker anhaengen. Der
+Marker bleibt so die letzte Zeile dessen, was der Transform produziert; der
+Trailer landet innerhalb der gequoteten Commit-Message. Das Ergebnis von
+"no-compress git commit -m \"x\"" ist gueltiges bash (im Test mit bash -n
+geprueft).
+
+Der PreToolUse-Selbstbypass ist ersatzlos GESTRICHEN, nicht nur verengt. Nach
+dem Umbau hatte er keinen Zweck mehr: es gibt keinen Wrapper, den er vor sich
+selbst schuetzen koennte, und einen nested Aufruf gibt es nicht -- den Hook
+ruft Claude Code auf, nicht bash. Uebrig blieb nur der Schaden. Die
+Asymmetrie zum PostToolUse-Selbstbypass (der eng bleibt: nur zusammen mit
+--b64/--filter-files, also nur echte Rewrites aus der alten Aera) ist damit
+begruendet statt geerbt: dort gibt es einen realen Doppelkompressions-Fall,
+hier nicht.
+
+Kein Fall gefunden, in dem der Trailer sonst unterdrueckt gehoert.
+MCP_RUN_COMPRESS_NO_CO_AUTHORED ist der dokumentierte und jetzt einzige Weg;
+im POD festgeschrieben, samt Abgrenzung zu CO_AUTHORED_BY (ersetzt den Wert,
+schaltet nicht ab).
+
+Tests in t/40-compress-bin.t. Rot-Phase nachgewiesen: die drei neuen
+Behauptungen fielen vor dem Fix (Subtests 5, 7, 9), die beiden
+Unveraendert-Waechter blieben gruen.
+
+  * Trailer trotz "mcp-run-compress" in der Commit-Message
+  * no-compress git commit bekommt Trailer UND Marker, und parst als bash
+  * MCP_RUN_COMPRESS_NO_CO_AUTHORED unterdrueckt weiterhin
+  * Background-git-commit bekommt den Trailer; Background-no-compress bekommt
+    das Praefix gestrippt, aber keinen Marker
+  * gewoehnliche Nicht-git-Commands bleiben unangetastet
+
+Mutationsgeprueft: breiter Bypass zurueck, no-compress ohne Transform,
+Background ueberspringt alles, Marker auch bei Background, Opt-out-Env
+weggeworfen, Praefix nicht gestrippt -- jede Mutation toetet genau die
+zugehoerige Behauptung. prove -lr t/ komplett gruen (9 Dateien, 115 Tests).
+REVIEW ABGENOMMEN 2026-08-15 (main). Die drei tragenden Behauptungen live am
+Hook nachgeprueft, nicht nur ueber die Suite:
+
+  git commit -m "fix mcp-run-compress hook"
+    -> Trailer wird gesetzt (der Selbstbypass greift nicht mehr auf ein blosses
+       Vorkommen des Namens in der Commit-Message)
+  no-compress git commit -m "x"
+    -> Trailer UND Marker, und 'bash -n' auf dem Ergebnis ist syntaktisch
+       gueltig -- der angehaengte Kommentar aendert nichts an der Bedeutung
+  MCP_RUN_COMPRESS_NO_CO_AUTHORED=1
+    -> gar kein updatedInput, also kein Eingriff: das Opt-out wirkt weiterhin
+       und bleibt der einzige dokumentierte Weg
+
+Die Streichung statt Verengung ist im Ticket begruendet und die verbleibende
+Asymmetrie zum PostToolUse-Selbstbypass (der eng bleibt, weil es dort einen
+realen Doppelkompressionsfall gibt) ebenfalls -- das ist der Unterschied
+zwischen begruendet und geerbt, und er steht jetzt schriftlich.
