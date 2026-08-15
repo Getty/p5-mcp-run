@@ -1,0 +1,49 @@
+---
+claimed_at: 2026-08-15T08:32:04Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T08:20:25Z
+created: 2026-08-15T05:54:08Z
+id: 15
+priority: medium
+started: 2026-08-15T05:55:01Z
+status: done
+title: Tool-Call ohne command meldet Erfolg statt Fehler
+updated: 2026-08-15T08:32:04Z
+---
+
+Gefunden von einem Worker bei #12, von mir nachgeprueft (Session 0a4d56b3,
+2026-08-15). lib/MCP/Run.pm, _handle_run.
+
+Das input_schema fuehrt 'command' unter required, durchgesetzt wird das nirgends.
+Ohne gesetztes allowed_commands faellt der Request durch beide Gates und landet
+in execute(), das 'bash -c ""' startet -- Exitcode 0. Gemessen ueber das echte
+Tool-Objekt:
+
+  kein command-Key   -> Exit code: 0
+  command => undef   -> Exit code: 0
+  command => ''      -> Exit code: 0
+
+Ein unvollstaendiger oder kaputter Request wird also als erfolgreich
+durchgelaufener Command beantwortet. Fuer den Client ist das nicht von einem
+echten Erfolg zu unterscheiden; er sieht keinen Grund, den Request zu
+korrigieren. Nebenbei wird fuer nichts ein Prozess gestartet.
+
+Mit gesetztem allowed_commands greift seit dem Fix aus #12 wenigstens
+"Command not allowed: (empty command)" -- das ist aber die Allowlist, die
+zufaellig einspringt, nicht eine Pruefung des Contracts. Ohne Allowlist bleibt es
+beim stillen Erfolg.
+
+Fix in _handle_run, vor beiden Gates: fehlendes oder leeres command als
+Fehlerresultat zurueckweisen. Betrifft alle kuenftigen Runner-Subklassen
+gleichermassen, gehoert also in die Basisklasse und nicht nach Bash.pm.
+
+Randfall, der bei der Gelegenheit zu entscheiden ist: ist ein Command aus reinem
+Whitespace ein leerer Command? Nach dem Verhalten der Allowlist ja
+(/^\s*(\S+)/ matcht nicht). Beide Pfade sollten dieselbe Antwort geben.
+REVIEW ABGENOMMEN 2026-08-15 (main). Der Test in t/05-base.t prueft die
+Eigenschaft, nicht nur die Meldung: neben isError und 'No command given' zaehlt
+ein Recorder mit, dass execute() gar nicht erreicht wird -- fuer alle vier
+Formen (fehlender Key, undef, '', Whitespace). Der Randfall ist entschieden:
+Whitespace zaehlt als leer, und ein eigener Subtest haelt den Allowlist-Pfad auf
+derselben Antwort fest.
