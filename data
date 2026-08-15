@@ -1,0 +1,60 @@
+---
+claimed_at: 2026-08-15T08:31:10Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T08:20:04Z
+created: 2026-08-15T05:45:20Z
+id: 11
+priority: high
+started: 2026-08-15T05:48:22Z
+status: done
+title: Docker-Modus verschluckt bei Docker-Ausfall den gesamten Output
+updated: 2026-08-15T08:31:10Z
+---
+
+Reproduziert Session 0a4d56b3, 2026-08-15. Betrifft bin/mcp-run-compress,
+docker_pipe_rewrite() (Zeile 91 ff), also den Installationsmodus fuer Nutzer
+ohne Perl.
+
+Das erzeugte Host-Snippet fuehrt den Original-Command aus und leitet stdout und
+stderr in zwei mktemp-Dateien um. Ausgegeben wird beides ausschliesslich vom
+nachfolgenden 'docker run ... --filter-files'. Ein trap ... EXIT loescht die
+Temp-Dateien danach. Scheitert der docker-Aufruf, gibt niemand die Ausgabe aus
+und der trap raeumt sie weg.
+
+Gemessen mit dem echten, vom Hook erzeugten Snippet (Command:
+'echo WICHTIGE-AUSGABE; echo fehlertext >&2; exit 7'):
+
+  docker-Stub mit exit 1   ->  "Cannot connect to the Docker daemon", EXITCODE=7
+  docker nicht im PATH     ->  "docker: command not found",           EXITCODE=7
+
+In beiden Faellen fehlen WICHTIGE-AUSGABE und fehlertext vollstaendig. Der
+Exit-Code kommt korrekt durch -- das macht es schlimmer, nicht besser: fuer das
+Modell sieht ein Command mit exit 0 dann aus wie erfolgreich und ohne Ausgabe.
+
+Ausloeser sind Alltagsfaelle, nicht Randfaelle: Docker-Daemon nicht gestartet,
+Image noch nicht gezogen, Registry-Rate-Limit, Nutzer nicht in der docker-Gruppe.
+
+Vorschlag: Fallback auf die rohen Dateien, wenn die Compression nicht laeuft --
+
+  docker run ... || { cat "$__o"; cat "$__e" >&2; }
+
+Damit degradiert der Modus auf "unkomprimiert" statt auf "stumm". Ein Hinweis
+auf stderr, dass die Compression uebersprungen wurde, waere sinnvoll, muss aber
+so knapp sein, dass er nicht selbst zum Rauschen wird.
+
+Test: t/40-compress-bin.t deckt den docker rewrite heute nur als String-Form ab.
+Der Fallback laesst sich mit einem docker-Stub im PATH echt ausfuehren.
+REVIEW ABGENOMMEN 2026-08-15 (main), mit einer Anmerkung zum Weg dorthin.
+
+Der Fix aus 2affb3f war der vorgeschlagene Fallback im Host-Snippet
+('|| { ...; cat "$__o"; cat "$__e" >&2; }'). Inzwischen ist die Fehlerklasse
+strukturell entfallen: der Umbau aus #9 hat docker_pipe_rewrite() ganz
+abgeschafft. Im Docker-Modus laeuft heute nur noch
+'docker run --rm -i --network none <image> --hook' ueber stdin/stdout -- es gibt
+kein Host-Snippet mehr, keine Temp-Dateien und keinen trap, der etwas wegraeumen
+koennte. Faellt Docker aus, ersetzt der PostToolUse-Hook die Ausgabe schlicht
+nicht; das Original bleibt stehen. Degradiert also auf unkomprimiert statt auf
+stumm, jetzt sogar ohne dass es dafuer eigenen Code braucht.
+
+Nachgeprueft am aktuellen Stand: docker_pipe_rewrite existiert nicht mehr.
