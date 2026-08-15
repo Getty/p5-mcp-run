@@ -1,0 +1,51 @@
+---
+claimed_at: 2026-08-15T07:48:51Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T07:48:51Z
+created: 2026-08-15T06:12:01Z
+id: 20
+priority: low
+started: 2026-08-15T07:48:51Z
+status: done
+title: 'Frage: soll die CPAN-Distribution .claude/ und CLAUDE.md mitliefern?'
+updated: 2026-08-15T07:48:51Z
+---
+
+Beobachtung aus der Release-Vorbereitung 2026-08-15, keine Fehlfunktion --
+eine Entscheidung, die bisher nie bewusst getroffen wurde.
+
+dist.ini enthaelt keine Prune-Regel, GatherDir nimmt also alles mit. Gemessen an
+der gebauten Distribution MCP-Run-0.107:
+
+  gesamt        452 KB, 39 Dateien
+  davon .claude 128 KB, 10 Dateien  (agents/, rules/, skills/, settings.json)
+  CLAUDE.md      12 KB
+
+Rund 31 Prozent des Tarballs sind damit interne Arbeitsanweisungen fuer
+KI-Agenten: die karr-, perl-core-, perl-mojo-, perl-mcp-Skills, die
+mcp-run-rules, die Worker-Definition. Auf CPAN nuetzt das niemandem, es
+erscheint aber im Tarball, in der MANIFEST und im MetaCPAN-Dateibrowser.
+
+Das ist Status quo, kein Rueckschritt -- 0.106 hat dasselbe ausgeliefert, weil
+es nie eine Prune-Regel gab. Deshalb niedrige Prioritaet.
+
+Zwei vertretbare Antworten:
+ (a) Prune fuer .claude/ (und ggf. CLAUDE.md) in dist.ini. Tarball wird um ein
+     Drittel kleiner, der Inhalt beschraenkt sich auf das, was ein CPAN-Nutzer
+     braucht. Im Git-Repo bleibt alles wie es ist.
+ (b) Bewusst mitliefern, mit kurzer Begruendung als Kommentar in dist.ini --
+     etwa weil die Skills die Architektur dokumentieren und wer die
+     Distribution auscheckt, sie mitbekommen soll.
+
+Wichtig ist nicht welche, sondern dass es einmal entschieden und in dist.ini
+notiert wird. Sonst stellt sich die Frage beim naechsten Release erneut.
+
+ERLEDIGT 2026-08-15, Weg (a): [PruneFiles] mit match = ^\.claude/ in dist.ini,
+samt Begruendung als Kommentar direkt darueber. CLAUDE.md bleibt drin -- es
+beschreibt die Architektur und ist die Datei, die ein Packager oder Beitragender
+zuerst liest; die Skills und Agent-Definitionen sind dagegen Anweisungen fuer die
+Arbeit AN der Distribution und haben im Tarball nichts verloren.
+
+Gemessen am Build: 452 KB / 39 Dateien -> 336 KB / 29 Dateien, .claude/ zu null
+Treffern, CLAUDE.md vorhanden.
