@@ -1,0 +1,77 @@
+---
+claimed_at: 2026-08-15T08:26:26Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T08:26:26Z
+created: 2026-08-15T07:59:06Z
+id: 25
+priority: high
+started: 2026-08-15T07:59:44Z
+status: done
+title: Filterauswahl bei zusammengesetzten Commands haengt am Hash-Seed
+updated: 2026-08-15T08:26:26Z
+---
+
+Gefunden von einem Worker bei #23, von mir nachgemessen und bestaetigt
+(Session 325827e5, 2026-08-15). lib/MCP/Run/Compress.pm.
+
+Die Filterauswahl iteriert 'keys %{$self->filters}' unsortiert. Die
+Vorrangregel darunter loest nur den Fall parsed_command gegen Legacy-Regex.
+Matchen ZWEI Legacy-Regex-Filter, entscheidet die Perl-Hash-Reihenfolge --
+pro Prozess verschieden.
+
+Das ist kein Randfall. Der git-commit-Filter ist als einziger nicht auf ^
+verankert (mit Absicht, damit er zusammengesetzte Commands trifft), also
+kollidiert er mit jedem verankerten Filter, sobald der Command
+zusammengesetzt ist:
+
+  cat msg.txt && git commit -m "fix"     ^cat\b  gegen  \bgit\b...\bcommit\b
+
+Gemessen ueber 12 Prozesse mit verschiedenen PERL_HASH_SEED, gleicher Command,
+gleiche Eingabe: 9 mal KEIN Trailer, 3 mal Trailer. Reiner Zufall.
+
+MEINE FRUEHERE ENTWARNUNG IN #13 WAR FALSCH. Ich hatte 48 Commands geprueft
+und null Kollisionen gleicher Art gemeldet -- aber ausschliesslich einfache
+Commands. Genau die Form, die kollidiert, war nicht dabei. Der Fehler lag in
+der Auswahl der Stichprobe, nicht in der Messung.
+
+DIE URSACHE IST TIEFER ALS DIE HASH-REIHENFOLGE, und deshalb ist 'sort' nicht
+der Fix. Nachgemessen: der git-commit-Filter hat KEIN einziges
+ausgabeformendes Attribut. Er existiert ausschliesslich fuer seinen
+command_transform. Trotzdem nimmt er an der Auswahl des AUSGABE-Filters teil,
+und das ist in beide Richtungen falsch:
+
+  gewinnt er  -> der Trailer wird gesetzt, aber die Ausgabe von 'cat' laeuft
+                 voellig ungefiltert durch, weil er nichts formt
+  verliert er -> 'cat' filtert korrekt, aber der Trailer fehlt
+
+Es gibt also keine richtige Antwort auf die Frage "welcher gewinnt" -- die
+Frage selbst ist falsch gestellt. Beide Anliegen sind unabhaengig.
+
+FIX: command_transform von der Auswahl des Ausgabefilters entkoppeln. In
+_pipeline zwei getrennte Entscheidungen:
+ 1. command_transform: erster Filter mit einem solchen, in sortierter
+    Reihenfolge -- genau das, was transform_command bereits tut und weshalb
+    transform_command von diesem Bug nicht betroffen ist.
+ 2. Ausgabefilter: unabhaengig davon auswaehlen, unter den Filtern, die
+    ueberhaupt etwas formen.
+
+Danach greifen bei 'cat msg.txt && git commit -m "fix"' beide: Trailer UND
+cat-Filterung. Heute nie beide, und welches von beiden, entscheidet der Wuerfel.
+
+Zu pruefen ist dabei, ob nach der Entkopplung noch Kollisionen zwischen zwei
+formenden Legacy-Filtern uebrig bleiben. Falls ja, braucht es dort eine
+explizite, begruendete Vorrangregel -- kein blindes sort, das waere nur
+deterministisch falsch statt zufaellig falsch.
+REVIEW ABGENOMMEN 2026-08-15 (main). Mit genau der Messung gegengeprueft, die
+den Bug gezeigt hat: 12 Prozesse, PERL_HASH_SEED 0..11, PERL_PERTURB_KEYS=1,
+Command 'cat msg.txt && git commit -m "fix"'.
+
+  vorher:  9 mal kein Trailer, 3 mal Trailer -- reiner Zufall
+  jetzt:  12 mal identisch, Trailer JA UND Ausgabe gefiltert (914 Zeichen)
+
+Damit ist auch die eigentliche Forderung des Tickets erfuellt und nicht nur die
+Nichtdeterminismus-Symptomatik: beide Anliegen greifen gleichzeitig, statt dass
+eines das andere verdraengt. Abgesichert durch t/compress.t 'command rewrite and
+output filter are independent decisions' sowie 'no two output-shaping filters
+compete for the same command'.
