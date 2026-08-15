@@ -30,10 +30,12 @@ the hook bin/mcp-run-compress and `MCP::Run::Compress`, **the other side inherit
 change**. The MCP-server compression default (AN in bin, AUS in the module) is
 intentional, not an inconsistency — do not "fix" it.
 
-The `--b64` mode in bin/mcp-run-compress carries a hardcoded 1800s timeout that has no
-central config knob. If you change it, also update the env-vars section in
-`.claude/skills/mcp-run-core/SKILL.md` and the README. The `lib/MCP/Run/Bash.pm` default
-of 30s is a separate concern and stays separate.
+Compression runs in a PostToolUse hook and no longer rewrites the Bash command. The
+byte cap on the replaced output is `MCP_RUN_COMPRESS_MAX_BYTES` (default 29000): stay
+under the harness' own ~30000 limit, or it persists the replacement and shows the model
+a 2 KB preview instead — worse than not compressing at all. If you change it, also update
+the env-vars section in `.claude/skills/mcp-run-core/SKILL.md` and the README. The
+`lib/MCP/Run/Bash.pm` default of 30s is a separate concern and stays separate.
 
 Sharp edges worth keeping in mind:
 - `allowed_commands` is not a sandbox — it only inspects the first word. Adding more

@@ -93,10 +93,19 @@ Two products share one codebase but ship independently. Traps that will bite:
 - **Two compression defaults, intentionally.** `bin/mcp-run-bash` ON; `MCP::Run` module
   attribute OFF. Not drift — bin is user-facing default, module is library default.
   Do not align.
-- **`--b64` hardcodes 1800s** in bin/mcp-run-compress. No env-var. If changed, also
-  update `.claude/skills/mcp-run-core/SKILL.md` env-vars section and the README.
-- **Hook does NOT enforce permissions.** It rewrites Bash → `mcp-run-compress --b64`.
+- **Compression happens in PostToolUse, not by rewriting the command.** `--install-claude`
+  registers two hooks: PreToolUse for the Co-Authored-By transform and the `no-compress`
+  marker, PostToolUse for the compression itself. `--b64` and `--filter-files` are gone,
+  and with them the hardcoded 1800s timeout and the docker pipe snippet.
+- **Three limits, all deliberate, all documented in the POD.** A command that exits
+  non-zero is not compressed at all — the harness fires PostToolUseFailure there and
+  ignores `updatedToolOutput` (karr #24). Background commands have no output yet when the
+  hook runs. Two PostToolUse hooks do not chain: each sees the original response and the
+  last one to answer wins, silently.
+- **Hook does NOT enforce permissions.** It annotates output and adds a trailer.
   Permission is Claude Code's job. Permission logic in the hook = layering violation.
+  This is also why the `no-compress` marker is appended rather than prepended: the first
+  word of a command is what Claude Code matches permission rules against.
 - **`format_result($tool, $result, $compress, $command)`:** overriding subclasses MUST
   thread `$command` through — command-specific filters only match when they see it.
 - **`transform_command` (Co-Authored-By) ≠ `compress()` (output filtering)** — different

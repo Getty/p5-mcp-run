@@ -88,6 +88,57 @@ subtest 'default config: serverInfo identifies the distribution' => sub {
   is $info->{version}, $dist_version,  'server version is the distribution version, not 1.0.0';
 };
 
+# karr #21: MCP_RUN_TIMEOUT used to be numified with `+ 0`, which takes any
+# string: '30s' became 30, 'abc' became 0, '1e400' became Inf, each with a
+# Perl warning on the stderr of a stdio server and no word to the user that
+# the configured value had been dropped. The env var is configuration a human
+# wrote into .mcp.json, not a per-call argument from the model: a typo there
+# must not be guessed at, so the server refuses to start.
+#
+# 'abc' and '30s' are the warning cases; '0' and '-5' are values MCP::Run::Bash
+# would silently replace with its default; '9999999999' is digits-only and
+# looks fine here but is past the alarm() ceiling below, so it would be
+# dropped one layer down without a trace. All of them are configuration the
+# user got wrong, and all of them must say so rather than run as something
+# else.
+subtest 'an unusable MCP_RUN_TIMEOUT refuses the start instead of guessing' => sub {
+  for my $bad ('abc', '30s', '5m', '0', '-5', '1e400', '  ', '9999999999', '2.5') {
+    my ($responses, $stderr, $rc) = run_mcp({ MCP_RUN_TIMEOUT => $bad }, tool_call('echo hallo'));
+
+    isnt $rc, 0, "MCP_RUN_TIMEOUT='$bad': server exits non-zero";
+    is scalar keys %$responses, 0,
+      "MCP_RUN_TIMEOUT='$bad': no JSON-RPC response, the server never came up";
+
+    like $stderr, qr/MCP_RUN_TIMEOUT/,
+      "MCP_RUN_TIMEOUT='$bad': the message names the variable";
+    like $stderr, qr/\Q$bad\E/,
+      "MCP_RUN_TIMEOUT='$bad': the message quotes the rejected value";
+
+    # The other half of the finding: no Perl warning may reach the stderr of a
+    # stdio server. Every warn() and every uncaught die carries an "at FILE
+    # line N" tail, which our own message deliberately does not, so this goes
+    # red both for the old "isn't numeric" noise and for any later mishap.
+    unlike $stderr, qr/isn't numeric/,
+      "MCP_RUN_TIMEOUT='$bad': no numeric-conversion warning";
+    unlike $stderr, qr/ at \S+ line \d+/,
+      "MCP_RUN_TIMEOUT='$bad': nothing on stderr but the diagnosis";
+  }
+};
+
+# The flip side: a value that passes validation has to arrive as the server
+# default, not merely be accepted. A one second timeout against `sleep 5` is
+# the cheapest way to observe the number the runner actually armed alarm()
+# with -- MCP::Run::Bash reports it in the timeout message.
+subtest 'a valid MCP_RUN_TIMEOUT reaches the runner' => sub {
+  my ($responses, $stderr, $rc) = run_mcp({ MCP_RUN_TIMEOUT => '1' }, tool_call('sleep 5'));
+
+  my $text = $responses->{3}{result}{content}[0]{text} // '';
+  like $text, qr/Exit code: 124/,             'command was timed out';
+  like $text, qr/timed out after 1s/,         'the timeout that ran is the configured one';
+  is $stderr, '', 'clean stderr' or diag "stderr: $stderr";
+  is $rc, 0, 'server exited cleanly';
+};
+
 done_testing;
 
 # A classic 'initialize' handshake followed by the tools/call. This is what
@@ -130,7 +181,7 @@ sub run_mcp {
     my $msg = eval { decode_json($line) } or next;
     $by_id{ $msg->{id} } = $msg if defined $msg->{id};
   }
-  return \%by_id;
+  return wantarray ? (\%by_id, $stderr, $rc) : \%by_id;
 }
 
 sub run {

@@ -9,9 +9,10 @@ instead of 900 lines of noise.
 Plug it into Claude Desktop, `.mcp.json`, or any MCP client.
 
 As a **bonus**, the same compression pipeline ships as a standalone Claude
-Code `PreToolUse` hook (`mcp-run-compress`) that filters output of Claude
-Code's built-in Bash tool. The hook is fully usable on its own via Docker —
-no Perl needed on the host.
+Code hook (`mcp-run-compress`) that filters the output of Claude Code's
+built-in Bash tool. It compresses in `PostToolUse`, so the command itself is
+never rewritten. The hook is fully usable on its own via Docker — no Perl
+needed on the host.
 
 ## Install (Perl)
 
@@ -72,10 +73,10 @@ line, which `max_lines` cannot shorten. Collapsing it to what actually
 stayed on the screen turns a 224 KB bar into a couple of dozen bytes
 without hiding anything the user would have seen.
 
-## Bonus: PreToolUse hook for Claude Code (mcp-run-compress)
+## Bonus: Claude Code hook (mcp-run-compress)
 
-Same compression pipeline, but installed as a Claude Code hook so it
-filters output of the built-in `Bash` tool.
+Same compression pipeline, installed as a Claude Code hook so it filters
+the output of the built-in `Bash` tool.
 
 ### With Perl already installed
 
@@ -93,65 +94,78 @@ docker run --rm \
 ```
 
 Patches `~/.claude/settings.json` and drops a bypass-skill into
-`~/.claude/skills/`. Host only needs `bash`, `mktemp`, `base64`, `docker`.
+`~/.claude/skills/`. Prefix any command with `no-compress ` to get raw
+output for that one call.
 
-Prefix any command with `no-compress ` to bypass the filter for one call.
+### Two hooks, and why
 
-### How the Docker install works
+`--install-claude` registers the same command on two events:
 
-The hook needs two things from two different worlds:
+- **PostToolUse** does the compression. It receives the command's output
+  and replaces it with the filtered version. The command itself is never
+  touched.
+- **PreToolUse** does the two things that have to happen *before* the
+  command runs: the Co-Authored-By trailer on `git commit`, and turning
+  `no-compress <cmd>` into `<cmd>` plus a trailing marker comment. The
+  marker is needed because PostToolUse only ever sees the rewritten
+  command — strip the prefix without leaving a trace and the compressing
+  hook can no longer tell that you asked it to stay out.
 
-- **Run the real Bash command** (`git status`, `dzil test`, …) with the
-  host's cwd, env, and binaries.
-- **Filter the output** — pure text processing, no host access needed.
+Earlier versions compressed by rewriting the Bash command into
+`mcp-run-compress --b64 <base64>`. That is gone, and with it a hardcoded
+1800-second timeout, the base64 round-trip, and — in Docker mode — a
+host-side snippet that captured output into temp files and lost all of it
+whenever `docker run` failed. Upgrading is just `--install-claude` again;
+it adds the missing hook and replaces entries that name the removed flags.
 
-So the hook splits them. The rewritten command runs the original
-command on the host, captures stdout/stderr into temp files, then
-mounts those into a container that compresses them:
+### Three things it does not do
 
-```
-{ __o=$(mktemp) && __e=$(mktemp) || exit 1
-  trap 'rm -f "$__o" "$__e"' EXIT
-  bash -c "$(printf %s '<B64>' | base64 -d)" >"$__o" 2>"$__e"   # host
-  __ec=$?
-  docker run --rm -v "$__o:/in/stdout:ro" -v "$__e:/in/stderr:ro" \
-       raudssus/mcp-run-compress:<pinned> \
-       --filter-files --cmd-b64 '<B64>' /in/stdout /in/stderr \
-    || { echo "mcp-run-compress: compression unavailable, raw output" >&2
-         cat "$__o"; cat "$__e" >&2; }                          # fallback
-  exit $__ec
-}
-```
+- **A command that exits non-zero is not compressed.** Claude Code raises
+  `PostToolUseFailure` there instead, and that event ignores any
+  replacement output. This is the one place the old rewrite did better,
+  and it is the noisiest output there is — a failing build. There is no
+  known way around it from a hook.
+- **Background commands** (`run_in_background`) have produced no output
+  yet when the hook runs, so they pass through untouched.
+- **Two PostToolUse hooks do not chain.** Each one is handed the original
+  output, and whichever answers last wins — silently. Another hook of
+  yours that replaces Bash output will simply switch compression off.
 
-Host bash runs on the host. Docker runs only the compression. No chroot,
-no shared toolchain, no Perl on the host.
+### Large output
 
-The `||` branch matters more than it looks. Without it, anything that
-stops `docker run` — daemon not started, image not pulled yet, registry
-rate limit, user not in the `docker` group — takes the command's entire
-output with it: stdout and stderr sit in the temp files, nothing prints
-them, and the `trap` deletes them. The exit code still comes through
-correctly, so a failed compression is indistinguishable from a command
-that legitimately produced no output. With the fallback the mode
-degrades to *uncompressed* instead of *silent*.
+Claude Code caps the output a hook is handed at 30 KB and writes the full
+text to a file alongside it. The hook reads that file, so compression sees
+everything, and the compressed result names the file's path in case you
+want the original.
+
+The replacement is subject to the same cap, which is the one number worth
+knowing: compress 100 KB down to 40 KB and the harness will file *that*
+away too and show the model a 2 KB preview — worse than not compressing at
+all. `MCP_RUN_COMPRESS_MAX_BYTES` (default 29000) keeps the result under
+the line, trimming the middle with a visible marker rather than quietly.
+
+In Docker mode the hook cannot read the file: it lives under `~/.claude`,
+and the only mountable directory above it holds every project's
+transcripts. There it compresses the 30 KB it was given and names the path
+without reading it.
 
 ### Which install mode gets written
 
 `bin/mcp-run-compress` reads `MCP_RUN_COMPRESS_INSTALL_MODE`:
 
-- unset / `native` → hook is `mcp-run-compress --hook`, rewrites to
-  `mcp-run-compress --b64 <…>` (in-process).
-- `docker` → hook is `docker run … --hook`, rewrites to the host-side
-  pipe-through snippet above.
+- unset / `native` → hook command is `mcp-run-compress --hook`
+- `docker` → hook command is `docker run --rm -i --network none … --hook`
 
-The Docker image bakes `ENV MCP_RUN_COMPRESS_INSTALL_MODE=docker`, so
-any `--install-claude` run *inside* the container writes the Docker-mode
-hook automatically. A native `cpanm` install on the host leaves the var
-unset. No detection heuristic; the image marks itself.
+Both run the same code — JSON in on stdin, JSON out. The mode only picks
+the command string written into `settings.json`. The Docker image bakes
+`ENV MCP_RUN_COMPRESS_INSTALL_MODE=docker`, so any `--install-claude` run
+*inside* the container writes the Docker-mode hook automatically; a native
+`cpanm` install leaves the var unset. No detection heuristic; the image
+marks itself.
 
 The image also bakes `MCP_RUN_COMPRESS_IMAGE=raudssus/mcp-run-compress:<version>`,
-so the hook is pinned to the exact version that installed it. Upgrades
-are explicit: `docker pull … && … --install-claude` again.
+so the hook is pinned to the exact version that installed it. Upgrades are
+explicit: `docker pull … && … --install-claude` again.
 
 ## Environment variables
 
@@ -159,11 +173,12 @@ are explicit: `docker pull … && … --install-claude` again.
 |----------------------------------|------------------------------------------------------------|
 | `MCP_RUN_ALLOWED_COMMANDS`       | Comma-separated whitelist for `mcp-run-bash`               |
 | `MCP_RUN_WORKING_DIRECTORY`      | Default cwd for `mcp-run-bash`                             |
-| `MCP_RUN_TIMEOUT`                | Default timeout (seconds) for `mcp-run-bash`               |
+| `MCP_RUN_TIMEOUT`                | Default timeout (seconds) for `mcp-run-bash`. Whole seconds, 1 to 2147483647. Anything else aborts the start with a message naming the value, rather than quietly substituting a default the user never asked for |
 | `MCP_RUN_COMPRESS`               | `0`/`false`/`no`/`off` disables compression in `mcp-run-bash` (default: enabled). `1`/`true`/`yes`/`on` forces it on. Case-insensitive. Overridable per-call via the tool's `compress` argument. |
 | `MCP_RUN_TOOL_NAME`              | Registered MCP tool name (default `run`)                   |
 | `MCP_RUN_COMPRESS_INSTALL_MODE`  | `native` (default) or `docker`. The shipped Docker image bakes `docker`; native Perl installs leave it unset. Overrides both the hook command `mcp-run-compress --install-claude` writes and the rewrite `--hook` emits. |
 | `MCP_RUN_COMPRESS_IMAGE`         | Image ref for docker-mode hook. Pinned to `:<version>` in image |
+| `MCP_RUN_COMPRESS_MAX_BYTES`     | Cap on the replaced output, default 29000. Above the harness' own ~30 KB limit it files the replacement away and shows a 2 KB preview instead, so the cap trims the middle with a visible marker first. Only applies when a raw file exists to point at |
 | `MCP_RUN_COMPRESS_NO_CO_AUTHORED`| Set to any value to disable Co-Authored-By replacement      |
 | `CO_AUTHORED_BY`                 | Replacement value for Co-Authored-By in git commits. Must be a plain trailer value — words plus optional `<mail@host>`; anything else is rejected and no trailer is written |
 | `ANTHROPIC_MODEL`                | Fallback for CO_AUTHORED_BY if not set. Same restriction    |

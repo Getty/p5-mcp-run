@@ -6,8 +6,10 @@ MCP-Run bietet zwei Produkte:
    Shell-Commands via `bash -c` ausführt und mit 30+ command-spezifischen
    Filtern komprimierte Ausgabe liefert. Für Claude Desktop, `.mcp.json` und
    andere MCP-Clients. Das ist das Hauptprodukt.
-2. **mcp-run-compress** (Bonus) – Ein Claude Code PreToolUse Hook, der dieselbe
+2. **mcp-run-compress** (Bonus) – Ein Claude Code Hook, der dieselbe
    Compression-Pipeline auf das eingebaute Bash-Tool von Claude Code anwendet.
+   Komprimiert in PostToolUse; PreToolUse macht nur Co-Authored-By und die
+   `no-compress`-Markierung.
    Praktisch: durch das Docker-Image (`raudssus/mcp-run-compress`) ist der Hook
    auch ohne Perl-Toolchain auf dem Host installierbar.
 
@@ -17,7 +19,7 @@ MCP-Run bietet zwei Produkte:
 p5-mcp-run/
 ├── bin/
 │   ├── mcp-run-bash       # MCP stdio Server (PRIMÄR)
-│   └── mcp-run-compress   # PreToolUse Hook + Installer (BONUS)
+│   └── mcp-run-compress   # PostToolUse-Compression + PreToolUse-Hook + Installer (BONUS)
 ├── lib/
 │   └── MCP/
 │       ├── Run.pm         # Basis-Server mit run-Tool
@@ -47,7 +49,7 @@ Einstieg: `mcp-run-bash` oder `MCP::Run::Bash->run_stdio`.
 |----------|---------|-------------|
 | `MCP_RUN_ALLOWED_COMMANDS` | alle | Komma-getrennte Whitelist |
 | `MCP_RUN_WORKING_DIRECTORY` | cwd | Default Working Directory |
-| `MCP_RUN_TIMEOUT` | 30 | Timeout in Sekunden |
+| `MCP_RUN_TIMEOUT` | 30 | Timeout in Sekunden. Ganze Zahl 1..2147483647, sonst bricht der Start ab (kein stiller Default) |
 | `MCP_RUN_COMPRESS` | Modul: 0, bin: 1 | Compression aktivieren (bin/mcp-run-bash default: 1) |
 | `MCP_RUN_TOOL_NAME` | run | Name des MCP-Tools |
 
@@ -62,27 +64,46 @@ command-spezifische Filter (ls, git, make, …) im MCP-Server-Modus greifen.
 
 ## mcp-run-compress (Bonus)
 
-Claude Code PreToolUse Hook für das eingebaute Bash-Tool. Wendet dieselbe
+Claude Code Hook für das eingebaute Bash-Tool. Wendet dieselbe
 Compression-Pipeline auf Bash-Output von Claude Code an. Standalone via Docker
 installierbar (`raudssus/mcp-run-compress`) — kein Perl auf dem Host nötig.
 
-**Modi:**
-- `native` (default): Hook ist `mcp-run-compress --hook`, rewrite zu `--b64`
-- `docker`: Hook ist `docker run ... --hook`, host-seitiges Pipe-Snippet
+**Zwei Hooks, ein Kommando.** `--install-claude` registriert `mcp-run-compress
+--hook` auf zwei Events; das Skript dispatcht über `hook_event_name`:
+- **PostToolUse** komprimiert, via `hookSpecificOutput.updatedToolOutput`. Die
+  Command wird nicht angefasst.
+- **PreToolUse** macht nur, was *vor* der Ausführung passieren muss:
+  Co-Authored-By und die `no-compress`-Markierung.
+
+Der `--b64`-Rewrite und `--filter-files` sind **weg**, mit ihnen der
+hardcodierte 1800s-Timeout und das Docker-Pipe-Snippet.
+
+**Modi** (wählen nur die Kommandozeile in settings.json, der Code ist derselbe):
+- `native` (default): `mcp-run-compress --hook`
+- `docker`: `docker run --rm -i --network none ... --hook`
 
 **Env-Vars:**
 | Variable | Default | Beschreibung |
 |----------|---------|-------------|
 | `MCP_RUN_COMPRESS_INSTALL_MODE` | native | native oder docker |
 | `MCP_RUN_COMPRESS_IMAGE` | raudssus/mcp-run-compress:latest | Docker Image (pinned in image) |
+| `MCP_RUN_COMPRESS_MAX_BYTES` | 29000 | Obergrenze der ersetzten Ausgabe. Darüber persistiert der Harness sie und zeigt dem Modell 2 KB Preview — schlechter als gar nicht komprimieren. Greift nur, wenn es eine Rohdatei gibt, auf die verwiesen werden kann |
 | `MCP_RUN_COMPRESS_NO_CO_AUTHORED` | - | Co-Authored-By deaktivieren |
 | `CO_AUTHORED_BY` | - | Replacement für Co-Authored-By (validiert: Wörter + optional `<mail@host>`, sonst kein Trailer) |
 | `ANTHROPIC_MODEL` | - | Fallback für CO_AUTHORED_BY |
 
 **Bypass:**
-- `no-compress <cmd>` – einzelne Command ohne Compression
-- Background Commands werden nicht umgeschrieben
-- Commands mit `mcp-run-compress` werden nicht umgeschrieben
+- `no-compress <cmd>` – PreToolUse streift das Präfix und hängt
+  `\n# mcp-run-compress: no-compress` an; PostToolUse liest die Markierung.
+  Nötig, weil PostToolUse **nur die umgeschriebene Command sieht**
+- Background Commands haben zur Hook-Laufzeit noch keine Ausgabe
+
+**Drei Grenzen, alle bewusst:**
+- Commands mit Exit ≠ 0 werden **gar nicht** komprimiert — dort feuert
+  `PostToolUseFailure`, und das ignoriert `updatedToolOutput` (karr #24)
+- Background Commands, siehe oben
+- Zwei PostToolUse-Hooks verketten sich nicht: jeder sieht das Original, der
+  zuletzt antwortende gewinnt — lautlos
 
 ## Architektur
 
@@ -116,17 +137,35 @@ installierbar (`raudssus/mcp-run-compress`) — kein Perl auf dem Host nötig.
 - `t/20-integration.t` – MCP lifecycle (server/discover, tools/list, tools/call) plus protocol contract: Requests ohne `params._meta` bzw. mit nicht unterstützter Protocol-Revision werden abgewiesen
 - `t/compress.t` – Compression Tests
 - `t/30-no-warnings.t` – Regression: Compress.pm warnings (transform returning undef, undef inputs)
-- `t/40-compress-bin.t` – `bin/mcp-run-compress`: `--hook` (native + docker rewrite, bypasses, malformed), `--install-claude` (settings patching, idempotent, docker mode), `--filter-files`, end-to-end MCP compression mit echtem command context (`--b64`, incl. ls-Filter)
-- `t/50-bash-bin.t` – `bin/mcp-run-bash` als Subprozess über echtes stdio (Legacy-Handshake): Compression an/aus, `serverInfo`-Identität. Deckt den Pfad ab, den echte Clients nehmen — genau dort, wo der Compress-Ladefehler durchrutschte
+- `t/40-compress-bin.t` – `bin/mcp-run-compress`: `--hook` auf beiden Events (PostToolUse-Compression inkl. `persistedOutputPath`, Byte-Deckel mit Marker, Background-Durchreichung; PreToolUse Co-Authored-By und `no-compress`-Markierung), `--install-claude` inkl. Migration alter 0.106-Installationen, fail-open bei kaputtem `@INC`
+- `t/50-bash-bin.t` – `bin/mcp-run-bash` als Subprozess über echtes stdio (Legacy-Handshake): Compression an/aus, `serverInfo`-Identität, `MCP_RUN_TIMEOUT`-Validierung. Deckt den Pfad ab, den echte Clients nehmen — genau dort, wo der Compress-Ladefehler durchrutschte
+- `t/60-filters-doc.t` – Drift-Wächter: gleicht die `=item`-Einträge in `Filters.pm` gegen die registrierte Filtertabelle ab, in beide Richtungen. Existiert, weil `Filters.pm` reine Doku ist, von keinem Code geladen wird und deshalb jahrelang unbemerkt auseinanderlief
 
-Die früher hier gelisteten „Fehlenden Tests" (`--hook`, `--install-claude`, Docker Rewrite, `--filter-files`, end-to-end MCP Compression) werden allesamt von `t/40-compress-bin.t` abgedeckt.
+**Zwei Tests, die eine Regel festnageln statt eines Verhaltens:** der
+Äquivalenztest in `t/compress.t` (107 Commands × 16 Ausgabeformen × 4
+stderr-Varianten) besteht darauf, dass `compress()` und `process()` dieselbe
+Pipeline sind — er ist die Absicherung dafür, dass die beiden nicht wieder
+auseinanderlaufen. Und der Kollisionstest daneben besteht darauf, dass pro
+Command höchstens ein ausgabeformender Filter je Art matcht; wer einen
+kollidierenden Filter hinzufügt, bekommt einen Fehlschlag mit der Aufforderung,
+eine explizite Vorrangregel zu setzen. Beide laufen über mehrere
+`PERL_HASH_SEED`-Werte, sonst wären sie zufällig grün.
 
 ## Troubleshooting
 
 **Hook wird nicht aufgerufen:**
-1. `~/.claude/settings.json` prüfen – PreToolUse Hook für Bash muss existieren
-2. `docker ps` zeigt Container? (bei docker mode)
-3. Logs: `docker run --rm -i raudssus/mcp-run-compress --hook` manuell testen
+1. `~/.claude/settings.json` prüfen – es müssen **zwei** Einträge für Bash
+   existieren, PostToolUse (Compression) und PreToolUse (Co-Authored-By,
+   `no-compress`). Fehlt der PostToolUse-Eintrag, ist es eine Installation von
+   vor dem Umbau: `mcp-run-compress --install-claude` erneut laufen lassen
+2. Claude Code liest Hook-Änderungen erst in einer neuen Session
+3. `docker ps` zeigt Container? (bei docker mode)
+4. Logs: `docker run --rm -i raudssus/mcp-run-compress --hook` manuell testen
+
+**Ausgabe ist unkomprimiert, obwohl der Hook läuft:** drei erwartbare Gründe,
+bevor man sucht – der Command ist mit Exit ≠ 0 gelaufen (dort feuert
+`PostToolUseFailure`, siehe karr #24), es war ein Background-Command, oder ein
+**anderer** PostToolUse-Hook auf Bash antwortet nach uns und gewinnt lautlos.
 
 **Compression funktioniert nicht im MCP-Modus:**
 - `compress: true` im Tool-Call setzen
@@ -156,16 +195,17 @@ mit (Dev-Loop `prove -lr t/` unberührt).
 
 - `allowed_commands` prüft nur das erste Wort der raw command (lib/MCP/Run.pm) — kein Sandbox
 - `working_directory` wird durch `cd '$dir' && ...` implementiert (lib/MCP/Run/Bash.pm), nicht chdir/open3
-- `mcp-run-compress --b64` hat hardcoded 1800s Timeout (bin/mcp-run-compress)
+- Der Byte-Deckel der ersetzten Ausgabe ist `MCP_RUN_COMPRESS_MAX_BYTES` (Default 29000, bin/mcp-run-compress). Er muss unter dem ~30000-Deckel des Harness bleiben: darüber persistiert der Harness die *Ersetzung* und zeigt dem Modell 2 KB Preview — schlechter als gar nicht komprimieren. Greift nur, wenn eine Rohdatei existiert, auf die der Text verweisen kann; ohne sie wäre ein Schnitt endgültiger Verlust
 - Hook schreibt nur die Bash command um, trifft keine Permission-Entscheidungen
 - `transform_command` (Co-Authored-By) und `compress()` (Output-Filtering) sind verwandt aber unterschiedlich
 - `mcp-run-bash` compression default ist AN (bin/mcp-run-bash), Modul-Attribut ist AUS (lib/MCP/Run.pm)
 - `format_result($tool, $result, $compress, $command)` — bei Override in Subclasses muss der `$command` für command-spezifische Filter durchgereicht werden
 - **MCP >= 0.15 erforderlich** (cpanfile-Pin). Ab 0.15 ist die Protocol-Revision Teil *jedes* Requests: `params._meta` muss `protocolVersion` und `clientCapabilities` tragen, sonst weist `MCP::Server::_check_meta` vor dem Dispatch mit `Missing protocol version` ab. Wer im Test einen nackten `MCP::Server::Context` baut, umgeht den Transport und landet im modernen Pfad — dann fallen scheinbar unabhängige Subtests gleichzeitig um. `initialize` heisst dort `server/discover`, `serverInfo` liegt in `result._meta`
-- Echte stdio-Clients laufen weiter über `MCP::Server::Legacy` (klassischer `initialize`-Handshake, `_check_meta` übersprungen) — MCP dokumentiert diesen Pfad aber als temporär, siehe karr #7
+- Echte stdio-Clients laufen weiter über `MCP::Server::Legacy` (klassischer `initialize`-Handshake, `_check_meta` übersprungen). MCP nennt den Pfad im Quelltext "temporary", aber er ist in 0.15 vorhanden, und **MCP 0.15 ist das Requirement** — was damit läuft, ist kein Bug (karr #7, entschieden 2026-08-15). Kein Shim, keine Obergrenze im cpanfile. Die Frühwarnung ist `t/50-bash-bin.t`: er fährt den klassischen Handshake und wird rot, sobald ein künftiges MCP den Pfad entfernt — erst dann ist die Frage neu zu stellen, und genau deshalb darf dieser Test nicht auf den modernen Pfad umgestellt werden
+- `MCP::Server::Legacy` **verhandelt keine Revision**: es liest `protocolVersion` zwar, verwirft aber nichts — passt der String nicht, antwortet es mit `$VERSIONS[-1]`. Jeder beliebige Versionsstring passiert. Echte Revisionsprüfung gibt es nur im modernen Pfad über `_check_meta` (`t/20-integration.t`, Subtest "protocol contract")
 - `MCP::Run::Compress` wird in lib/MCP/Run.pm **zur Compile-Zeit** geladen, obwohl `_get_compressor` den Compressor lazy konstruiert. Absicht: ein fehlendes/kaputtes Compress-Modul soll den Server beim Start umbringen, nicht beim ersten `tools/call` des Nutzers. Das `use` nicht in ein `require` im Lazy-Loader zurückbauen
-- **Umgekehrt bei `bin/mcp-run-compress`: der Hook lädt seine Module zur Laufzeit und ist fail-open.** Das ist kein Widerspruch zum Punkt darüber, sondern die andere Seite derselben Überlegung. Der Server darf beim Start sterben, weil ein Client das merkt und niemand sonst betroffen ist. Der Hook sitzt im kritischen Pfad des Bash-Tools: stirbt er, ist Exit 2 für Claude Code kein Fehler, sondern *„Tool-Call blockieren"* — eine halb kaputte Perl-Installation legt dann jede Bash-Command in jeder Session still. Er gibt deshalb bei jedem Ladefehler die Pass-Through-Antwort und Exit 0 zurück, mit einer Zeile auf stderr. `--b64` führt den Command dann unkomprimiert aus statt ihn zu verschlucken — dort ist der Hook die einzige Instanz, die ihn überhaupt noch ausführen würde. Die beiden Defaults NICHT angleichen.
-- Nicht fail-open, und das mit Absicht: `--filter-files` (Lautstärke ist genau das, was den `||`-Fallback des Docker-Snippets auslöst) und `--install-claude` (ein Installer, der still nichts tut, ist schlimmer als einer, der scheitert)
+- **Umgekehrt bei `bin/mcp-run-compress`: der Hook lädt seine Module zur Laufzeit und ist fail-open.** Das ist kein Widerspruch zum Punkt darüber, sondern die andere Seite derselben Überlegung. Der Server darf beim Start sterben, weil ein Client das merkt und niemand sonst betroffen ist. Der Hook sitzt im kritischen Pfad des Bash-Tools: stirbt er, ist Exit 2 für Claude Code kein Fehler, sondern *„Tool-Call blockieren"* — eine halb kaputte Perl-Installation legt dann jede Bash-Command in jeder Session still. Er gibt deshalb bei jedem Ladefehler die Pass-Through-Antwort und Exit 0 zurück, mit einer Zeile auf stderr — auf beiden Events. Die beiden Defaults NICHT angleichen.
+- Nicht fail-open, und das mit Absicht: `--install-claude` — ein Installer, der still nichts tut, ist schlimmer als einer, der scheitert
 - `serverInfo`-Identität (`mcp-run-bash`/`$VERSION`) liegt als Klassen-Default in lib/MCP/Run/Bash.pm, nicht in `bin/` — damit Library-Nutzer sie mitbekommen. Mojo::Base-Mechanik: skill `perl-mojo`
 
 ## Weitere Runner-Ideen

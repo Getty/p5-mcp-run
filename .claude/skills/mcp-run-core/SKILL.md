@@ -23,8 +23,8 @@ MCP-Run bietet zwei Produkte aus einer Codebase:
 | **filter** | Einzelne Compression-Stage in `MCP::Run::Compress` |
 | **stage** | Eine Position in der 11-Stage Pipeline |
 | **wire format** | JSON über stdio (MCP-Protokoll) — einzige I/O-Variante |
-| **hook** | PreToolUse Hook für Claude Code's Bash-Tool |
-| **rewrite** | Umschreiben von `Bash`-Tool-Calls zu `mcp-run-compress --b64` |
+| **hook** | Zwei Hooks für Claude Codes Bash-Tool: PreToolUse (Co-Authored-By, `no-compress`-Marker), PostToolUse (Compression) |
+| **marker** | `\n# mcp-run-compress: no-compress`, von PreToolUse angehängt, von PostToolUse gelesen — PostToolUse sieht nur die *umgeschriebene* Command |
 | **transform_command** | Co-Authored-By Manipulation (Hook) — verwandt aber ≠ compress |
 
 ## Layer Map
@@ -56,10 +56,17 @@ command-spezifischen Filter nicht.
 - **`mcp-run-bash` Compression default = AN** (bin/mcp-run-bash), aber
   Modul-Attribut default = AUS (lib/MCP/Run.pm). Beide Defaults sind intentional
   und **nicht** angleichen.
-- **Hook schreibt nur die Bash command um**, trifft keine Permission-Entscheidung.
-  Permission ist Claude Code's Job.
-- **`mcp-run-compress --b64` hat hardcoded 1800s Timeout** — beim Touchen prüfen,
-  ob das noch zeitgemäß ist (kommt aus dem Bonus-Hook, nicht aus dem MCP-Server).
+- **Der Hook trifft keine Permission-Entscheidung.** Permission ist Claude Codes Job.
+  Deshalb wird der `no-compress`-Marker *angehängt* und nicht vorangestellt: das erste
+  Wort der Command ist das, wogegen Claude Code Permission-Regeln matcht.
+- **Compression läuft in PostToolUse**, die Command wird nicht mehr umgeschrieben.
+  `--b64` und `--filter-files` gibt es nicht mehr, mit ihnen sind der hardcodierte
+  1800s-Timeout und das Docker-Pipe-Snippet verschwunden.
+- **Drei Grenzen, alle bewusst:** Commands mit Exit ≠ 0 werden gar nicht komprimiert
+  (dort feuert PostToolUseFailure und ignoriert `updatedToolOutput`, karr #24);
+  Background-Commands haben zur Hook-Laufzeit noch keine Ausgabe; und zwei
+  PostToolUse-Hooks verketten sich nicht — jeder sieht das Original, der letzte
+  gewinnt, lautlos.
 - **MCP >= 0.15 ist Pflicht** (cpanfile-Pin, bewusst ohne Kompatibilitätsweichen).
   Ab 0.15 ist die Protocol-Revision Teil *jedes* Requests: `params._meta` braucht
   `protocolVersion` (gegen `MCP::Constants::SUPPORTED_VERSIONS`) und
@@ -117,6 +124,7 @@ Stufe liefe ein 224-KB-Balken bei `cargo build`, `make`, `npm install` und
 |-----|---------|-----------|
 | `MCP_RUN_COMPRESS_INSTALL_MODE` | native | native oder docker |
 | `MCP_RUN_COMPRESS_IMAGE` | raudssus/mcp-run-compress:latest | Docker Image |
+| `MCP_RUN_COMPRESS_MAX_BYTES` | 29000 | Deckel der ersetzten Ausgabe; darüber persistiert der Harness sie und zeigt 2 KB Preview |
 | `MCP_RUN_COMPRESS_NO_CO_AUTHORED` | — | Co-Authored-By deaktivieren |
 | `CO_AUTHORED_BY` | — | Replacement. Validiert: Wörter plus optional `<mail@host>`, sonst wird der Command unverändert gelassen |
 | `ANTHROPIC_MODEL` | — | Fallback für CO_AUTHORED_BY, gleiche Einschränkung |
@@ -136,8 +144,10 @@ t/20-integration.t   # MCP lifecycle (server/discover, tools/list, tools/call)
                      # + protocol contract: fehlendes _meta / alte Revision
 t/compress.t         # Compression
 t/30-no-warnings.t   # Regression: Compress.pm warnings (transform undef, undef inputs)
-t/40-compress-bin.t  # bin/mcp-run-compress: --hook, --install-claude, --filter-files,
-                     # end-to-end MCP compression mit echtem command context
+t/40-compress-bin.t  # bin/mcp-run-compress: --hook (PreToolUse + PostToolUse),
+                     # --install-claude inkl. Migration alter Installationen,
+                     # Byte-Deckel, Background-Bypass, fail-open
+t/60-filters-doc.t   # Filters.pm gegen die registrierte Filtertabelle (Drift-Wächter)
 t/50-bash-bin.t      # bin/mcp-run-bash als Subprozess über echtes stdio
                      # (Legacy-Handshake): Compression an/aus, serverInfo-Identität
 ```

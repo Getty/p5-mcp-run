@@ -2,6 +2,8 @@ use Test::More;
 use lib 'lib';
 use MCP::Run::Compress;
 use File::Temp qw(tempdir);
+use File::Basename qw(dirname);
+use File::Spec;
 
 subtest 'compress ls -la' => sub {
   my $c = MCP::Run::Compress->new;
@@ -439,5 +441,441 @@ subtest 'carriage returns collapse to what the terminal actually shows' => sub {
 
   done_testing;
 };
+
+subtest 'compress() and process() are the same pipeline' => sub {
+  # karr #23: the eleven stages exist twice, once list-shaped and once
+  # hashref-shaped. This subtest is the safety net for pulling them
+  # together, and it is deliberately not two examples: a divergence in a
+  # stage that rarely fires (on_empty, head/tail, match_output) is exactly
+  # the kind that stays hidden. The corpus is the whole filter table
+  # crossed with the output shapes the stages react to.
+  local $ENV{CO_AUTHORED_BY} = 'claude-opus-5';
+  delete local $ENV{ANTHROPIC_MODEL};
+  delete local $ENV{MCP_RUN_COMPRESS_NO_CO_AUTHORED};
+
+  my $c = MCP::Run::Compress->new;
+
+  # One command per legacy (regex-keyed) filter, plus commands no filter
+  # knows -- those take the early return, which is a pipeline path of its
+  # own.
+  my @commands = (
+    'ls -la',
+    'cat lib/Foo.pm',
+    'cpanm Some::Module',
+    'df -h',
+    'find . -name "*.pm"',
+    'git diff',
+    'grep -rn needle .',
+    'make all',
+    'ps aux',
+    'stat lib/Foo.pm',
+    'git commit -m "fix bug"',
+    qq{git commit -m "fix bug\n\nCo-Authored-By: Old One <a\@b.de>"},
+    'shopify theme push',
+    'bun install',
+    'gradle build',
+    'my-own-tool --go',
+    'unknown-command --flag',
+    '',
+  );
+
+  # ... and one derived from every parsed_command filter, straight from the
+  # filter table, so a filter added later is covered without touching this
+  # test.
+  for my $key (sort keys %{$c->filters}) {
+    next unless $key =~ /^parsed:/;
+    my (undef, $program, $subcommand, $flagspec) = split /:/, $key, 4;
+    my @flags = map {
+      my ($name, $value) = split /=/, $_, 2;
+      (defined $value && $value ne '1') ? "--$name=$value" : "--$name";
+    } grep { length } split /,/, ($flagspec // '');
+    push @commands, join ' ', grep { defined && length } $program, $subcommand, @flags;
+  }
+
+  # And every one of them again as a compound command. Two filters can match
+  # one command, and since karr #25 the output filter and the command
+  # rewrite are two independent decisions -- a corpus of only simple
+  # commands cannot see either fact. That blind spot is exactly how #25
+  # stayed hidden behind a 48-command sweep.
+  push @commands, map { qq{$_ && git commit -m "fix"} } grep { length } @commands;
+
+  # Guard against a corpus that quietly stops covering the table.
+  my @uncovered = grep {
+    my $key = $_;
+    !grep { $_ =~ /$key/ } @commands;
+  } grep { !/^parsed:/ } sort keys %{$c->filters};
+  is scalar(@uncovered), 0, 'every regex filter is reached by the corpus'
+    or diag "uncovered: @uncovered";
+
+  my $bar = join("\r",
+    map { sprintf '[%-20s] %3d%% eta %ds', '#' x int($_ / 15), int($_ / 3), 300 - $_ } 1 .. 300
+  ) . "\r";
+
+  my %outputs = (
+    'undef'           => undef,
+    'empty'           => '',
+    'whitespace only' => "   \n\n  \n",
+    'plain'           => "one\ntwo\nthree\n",
+    'no trailing nl'  => "one\ntwo\nthree",
+    'many lines'      => join("\n", map { "line $_ /path/to/file$_" } 1 .. 200),
+    'long lines'      => ('x' x 400) . "\nshort\n" . ('y' x 250),
+    'ansi'            => "\e[32mgreen\e[0m ok\n\e[1;31merror\e[0m bad\n",
+    'progress bar'    => $bar,
+    'crlf'            => "first\r\nsecond\r\nthird\r\n",
+    'bar then text'   => "dl 10%\rdl 100%\r\nunpacking done\n",
+    'ls listing'      => "total 24\ndrwxr-xr-x 14 getty getty 4096 Apr 24 02:32 .\n-rw-r--r--  1 getty getty 246 Mar 12 04:03 .gitignore\n",
+    'git diff'        => "diff --git a/x b/x\nindex 1234567..89abcde 100644\n--- a/x\n+++ b/x\n\@\@ -1 +1,2 \@\@\n+use strict;\n done\n",
+    'make noise'      => "make[1]: Entering directory '/x'\ngcc -O2 foo.c\nNothing to be done\n",
+    'npm noise'       => "up to date, audited 231 packages in 2s\n\nfound 0 vulnerabilities\n",
+    'high bytes'      => "caf\xc3\xa9\n\x00\x01binary-ish\n",
+  );
+
+  my %errors = (
+    'no stderr'    => '',
+    'undef stderr' => undef,
+    'diagnostics'  => "warning: deprecated\nerror: boom\n",
+    'stderr bar'   => $bar,
+  );
+
+  my $same = sub {
+    my ($x, $y) = @_;
+    return 1 if !defined $x && !defined $y;
+    return 0 if !defined $x || !defined $y;
+    return $x eq $y;
+  };
+
+  my ($compared, $effective, @divergences, @command_divergences) = (0, 0);
+  for my $command (@commands) {
+    # Depends on the command alone -- hoisted out of the output loops.
+    my $expected_command = $c->transform_command($command);
+
+    for my $oname (sort keys %outputs) {
+      for my $ename (sort keys %errors) {
+        my ($stdout, $stderr) = ($outputs{$oname}, $errors{$ename});
+
+        my @list = $c->compress($command, $stdout, $stderr);
+        my $hash = $c->process($command, $stdout, $stderr);
+
+        $compared++;
+        $effective++ if $list[0] ne ($stdout // '') || $list[1] ne ($stderr // '');
+
+        # Decision 1 has exactly one rule since karr #25 -- transform_command
+        # -- and process() must not have a second opinion about it.
+        push @command_divergences, sprintf "command=<%s>: process() said <%s>", $command, $hash->{command}
+          unless $hash->{command} eq $expected_command;
+
+        next if $same->($list[0], $hash->{stdout}) && $same->($list[1], $hash->{stderr});
+        push @divergences, sprintf
+          "command=<%s> stdout=%s stderr=%s\n  compress: out=%s err=%s\n  process:  out=%s err=%s",
+          $command, $oname, $ename,
+          _show($list[0]), _show($list[1]),
+          _show($hash->{stdout}), _show($hash->{stderr});
+      }
+    }
+  }
+
+  # The claim only means something if the matrix is broad AND actually
+  # reaches the stages: an all-pass-through matrix would agree trivially.
+  note sprintf "matrix: %d commands, %d comparisons, %d of them filtered", scalar(@commands), $compared, $effective;
+  cmp_ok scalar(@commands), '>=', 80, 'corpus spans the whole filter table, plain and compound';
+  cmp_ok $compared, '>', 4000, 'equivalence is checked over a broad matrix';
+  cmp_ok $effective, '>', 500, 'the matrix really exercises the filters, not just pass-through';
+
+  is scalar(@command_divergences), 0, 'process() reports exactly the command transform_command produces'
+    or diag join "\n", @command_divergences[0 .. ($#command_divergences > 9 ? 9 : $#command_divergences)];
+
+  is scalar(@divergences), 0, 'compress() and process() agree on every pair'
+    or diag join "\n", @divergences[0 .. ($#divergences > 9 ? 9 : $#divergences)];
+
+  # Two headline cases spelled out, so the subtest still says something
+  # concrete when the aggregate count is all one reads.
+  {
+    my $input = "total 24\ndrwxr-xr-x 14 getty getty 4096 Apr 24 02:32 .\n";
+    my @list = $c->compress('ls -la', $input, 'oops');
+    my $hash = $c->process('ls -la', $input, 'oops');
+    is_deeply [@list], [$hash->{stdout}, $hash->{stderr}], 'ls -la: identical result';
+  }
+  {
+    my $input = "some output\nwith lines\n";
+    my @list = $c->compress('my-own-tool --go', $input, 'oops');
+    my $hash = $c->process('my-own-tool --go', $input, 'oops');
+    is_deeply [@list], [$hash->{stdout}, $hash->{stderr}], 'unknown command: identical result';
+  }
+
+  done_testing;
+};
+
+subtest 'Co-Authored-By: detection and replacement agree on spelling' => sub {
+  # karr #18: the detection was case-insensitive, the replacement in the
+  # same branch was not. A lower- or upper-cased trailer entered the branch,
+  # replaced nothing, and returned early -- so the injection below never ran
+  # either and the commit came out with NO trailer at all. The property
+  # under test is therefore not "the value is right" but "there is exactly
+  # one trailer and it carries the new value".
+  local $ENV{CO_AUTHORED_BY} = 'claude-opus-5';
+  delete local $ENV{ANTHROPIC_MODEL};
+  delete local $ENV{MCP_RUN_COMPRESS_NO_CO_AUTHORED};
+
+  my $c = MCP::Run::Compress->new;
+
+  for my $spelling ('Co-Authored-By:', 'co-authored-by:', 'CO-AUTHORED-BY:', 'Co-authored-by:', 'co-Authored-By:') {
+    my $cmd = qq{git commit -m "fix bug\n\n$spelling alt <a\@b.de>"};
+    my $got = $c->transform_command($cmd);
+
+    my $count = () = $got =~ /Co-Authored-By:/gi;
+    is $count, 1, "$spelling exactly one trailer";
+    like $got, qr/\nCo-Authored-By: claude-opus-5"\z/,
+      "$spelling replaced with the new value, canonical spelling, closing quote intact";
+    unlike $got, qr/alt <a\@b\.de>/, "$spelling old trailer value gone";
+  }
+
+  # Same class of bug, same fix: the substitution is now its own condition,
+  # so a shape the replacement does not reach can no longer swallow the
+  # injection. git itself does not insist on the space after the colon.
+  {
+    my $cmd = qq{git commit -m "fix bug\n\nCo-Authored-By:alt <a\@b.de>"};
+    my $got = $c->transform_command($cmd);
+    my $count = () = $got =~ /Co-Authored-By:/gi;
+    is $count, 1, 'no space after the colon: exactly one trailer';
+    like $got, qr/\nCo-Authored-By: claude-opus-5"\z/, 'no space after the colon: normalized';
+  }
+
+  # The heredoc form is what Claude Code actually emits.
+  {
+    my $heredoc = qq{git commit -m "\$(cat <<EOF\nfix bug\n\nco-authored-by: Claude <noreply\@anthropic.com>\nEOF\n)"};
+    like $c->transform_command($heredoc), qr/\nCo-Authored-By: claude-opus-5\nEOF/,
+      'heredoc with a lower-cased trailer: replaced in place';
+  }
+
+  # The MCP path reaches the same transform through the pipeline.
+  {
+    my $r = $c->process(qq{git commit -m "fix\n\nco-authored-by: alt <a\@b.de>"}, '', '');
+    like $r->{command}, qr/\nCo-Authored-By: claude-opus-5"\z/,
+      'process(): the fix reaches the MCP path too';
+  }
+
+  # A refused value still means no rewrite at all -- for every spelling.
+  {
+    local $ENV{CO_AUTHORED_BY} = 'evil" ; echo pwned ; echo "';
+    my $cmd = qq{git commit -m "fix\n\nco-authored-by: alt <a\@b.de>"};
+    is $c->transform_command($cmd), $cmd, 'invalid value: lower-cased trailer left untouched too';
+  }
+
+  done_testing;
+};
+
+subtest 'progress bars of unknown commands collapse too' => sub {
+  # karr #22: the collapse stage sat INSIDE the filtered part of the
+  # pipeline, so a command no filter knows returned before reaching it and
+  # its bar went through whole -- bun, gradle, deno, mise and every
+  # self-written script draw bars and have no filter. \r overwrites are
+  # presentation, not filtering: what we hand the model is what stood in
+  # the terminal. Everything else about the pass-through stays untouched.
+  my $c = MCP::Run::Compress->new;
+
+  my $states = 3000;
+  my $bar = join("\r", map {
+    sprintf '[%-40s] %3d%% eta %ds', '#' x int($_ * 40 / $states), int($_ * 100 / $states), $states - $_
+  } 1 .. $states) . "\r";
+  cmp_ok length($bar), '>', 150_000, 'fixture is a fat progress bar';
+
+  for my $command ('bun install', 'gradle build', 'deno task build', 'my-own-tool --go', 'pnpm dlx something') {
+    my ($out, $err) = $c->compress($command, $bar, '');
+    cmp_ok length($out), '<', 200, "$command: bar collapsed although no filter matches";
+    like $out, qr/100% eta 0s/, "$command: the state the user saw last is kept";
+    unlike $out, qr/\r/, "$command: no carriage return left";
+
+    my ($eout, $eerr) = $c->compress($command, '', $bar);
+    cmp_ok length($eerr), '<', 200, "$command: stderr bar collapsed too";
+
+    my $r = $c->process($command, $bar, $bar);
+    cmp_ok length($r->{stdout}), '<', 200, "$command: process() collapses stdout";
+    cmp_ok length($r->{stderr}), '<', 200, "$command: process() collapses stderr";
+  }
+
+  # The pass-through contract for unknown commands is otherwise intact:
+  # nothing is stripped, truncated or counted.
+  {
+    my $many = join("\n", map { "line $_ /path/to/file$_" } 1 .. 200) . "\n";
+    my ($out, $err) = $c->compress('my-own-tool --go', $many, "warning: careful\n");
+    is $out, $many, 'no filter: 200 lines pass through untouched, byte for byte';
+    is $err, "warning: careful\n", 'no filter: stderr passes through untouched';
+    unlike $out, qr/more lines/, 'no filter: nothing is truncated';
+  }
+
+  # Output without a \r comes back byte-identical, trailing newline included.
+  {
+    my $plain = "one\ntwo\nthree\n";
+    my ($out) = $c->compress('my-own-tool --go', $plain, '');
+    is $out, $plain, 'no filter, no \r: byte-identical, trailing newline kept';
+  }
+
+  # CRLF is a line ending, not a bar: every line survives the normalization.
+  {
+    my ($out) = $c->compress('my-own-tool --go', "first\r\nsecond\r\nthird\r\n", '');
+    is $out, "first\nsecond\nthird\n", 'no filter: CRLF normalized, no line lost';
+  }
+
+  # A bar followed by real output keeps the real output.
+  {
+    my ($out) = $c->compress('bun install', "dl 10%\rdl 55%\rdl 100%\r\ndone in 2s\n", '');
+    is $out, "dl 100%\ndone in 2s\n", 'no filter: states collapsed, the line after the bar intact';
+  }
+
+  done_testing;
+};
+
+subtest 'command rewrite and output filter are independent decisions' => sub {
+  # karr #25: both decisions used to come out of one filter lookup, so a
+  # compound command like `cat msg.txt && git commit -m "fix"` -- where the
+  # anchored cat filter and the deliberately unanchored git-commit filter
+  # both match -- got exactly one of the two, decided by Perl's per-process
+  # hash order. Neither answer was right: the git-commit filter shapes no
+  # output at all (it exists only for its command_transform), so winning
+  # meant the cat output passed through raw, and losing meant no trailer.
+  local $ENV{CO_AUTHORED_BY} = 'claude-opus-5';
+  delete local $ENV{ANTHROPIC_MODEL};
+  delete local $ENV{MCP_RUN_COMPRESS_NO_CO_AUTHORED};
+
+  my $c = MCP::Run::Compress->new;
+
+  # 150 lines with every tenth one blank: the cat filter strips blanks and
+  # caps at 100 lines, so its notice is proof that it ran.
+  my $input = join("\n", map { $_ % 10 ? "line $_ of the file" : '' } 1 .. 150) . "\n";
+  my $compound = q{cat msg.txt && git commit -m "fix"};
+
+  my $r = $c->process($compound, $input, '');
+  like $r->{command}, qr/Co-Authored-By: claude-opus-5/, 'compound: the trailer is set';
+  like $r->{stdout}, qr/more lines/, 'compound: and the cat filter shaped the output';
+  unlike $r->{stdout}, qr/^\s*$/m, 'compound: blank lines stripped by the cat filter';
+
+  my ($out) = $c->compress($compound, $input, '');
+  is $out, $r->{stdout}, 'compound: compress() and process() still agree';
+
+  # Neither decision may leak into the simple cases.
+  {
+    my $r = $c->process(q{git commit -m "fix"}, $input, '');
+    like $r->{command}, qr/Co-Authored-By: claude-opus-5/, 'plain git commit: trailer set';
+    is $r->{stdout}, $input, 'plain git commit: output passes through, it shapes nothing';
+  }
+  {
+    my $r = $c->process('cat msg.txt', $input, '');
+    like $r->{stdout}, qr/more lines/, 'plain cat: output filtered';
+    is $r->{command}, 'cat msg.txt', 'plain cat: command untouched';
+  }
+
+  # The bug was invisible in-process: one hash order per process means one
+  # answer per test run, and a green run proves nothing. Re-run the same
+  # question in fresh processes with different seeds.
+  my $lib = File::Spec->rel2abs(File::Spec->catdir(dirname($0), File::Spec->updir, 'lib'));
+  my $child = <<'CHILD';
+use MCP::Run::Compress;
+my $c = MCP::Run::Compress->new;
+my $input = join("\n", map { $_ % 10 ? "line $_ of the file" : '' } 1 .. 150) . "\n";
+my $r = $c->process(q{cat msg.txt && git commit -m "fix"}, $input, '');
+print join('|',
+  ($r->{command} =~ /Co-Authored-By: claude-opus-5/ ? 'trailer' : 'no-trailer'),
+  ($r->{stdout}  =~ /more lines/                    ? 'filtered' : 'raw'),
+), "\n";
+CHILD
+
+  my %seen;
+  for my $seed (0 .. 11) {
+    local $ENV{PERL_HASH_SEED}    = $seed;
+    local $ENV{PERL_PERTURB_KEYS} = 2;
+    open my $fh, '-|', $^X, "-I$lib", '-e', $child
+      or die "cannot run child for seed $seed: $!";
+    my $line = <$fh>;
+    close $fh;
+    $line = "<no output>" unless defined $line;
+    chomp $line;
+    $seen{$line}++;
+  }
+
+  is scalar(keys %seen), 1, 'the answer no longer depends on the hash seed'
+    or diag "seeds disagreed: " . join(', ', map { "$_ x$seen{$_}" } sort keys %seen);
+  is_deeply [keys %seen], ['trailer|filtered'],
+    'and in every process it is both: trailer set AND output filtered';
+
+  done_testing;
+};
+
+subtest 'no two output-shaping filters compete for the same command' => sub {
+  # The tie-break in _match_filter only resolves parsed_command against
+  # legacy regex. Two legacy filters matching the same command would again
+  # be decided by hash order, and there is no honest default answer -- so
+  # this fails loudly instead, and whoever adds the colliding filter picks
+  # an explicit precedence (karr #25).
+  my $c = MCP::Run::Compress->new;
+
+  my @shaping_attributes = qw(
+    filter_stderr strip_ansi match_output transform
+    strip_lines_matching keep_lines_matching truncate_lines_at
+    head_lines tail_lines max_lines on_empty
+  );
+  my $shapes = sub {
+    my ($filter) = @_;
+    for my $attribute (@shaping_attributes) {
+      my $value = $filter->{$attribute};
+      next unless defined $value;
+      return 1 if ref $value eq 'ARRAY' ? scalar(@$value) : $value;
+    }
+    return 0;
+  };
+
+  # A filter that neither shapes output nor rewrites the command is dead
+  # config -- and it is also the invariant that lets _match_filter skip
+  # non-shaping filters without losing anything.
+  my @dead = grep { !$shapes->($c->filters->{$_}) && !$c->filters->{$_}{command_transform} }
+    sort keys %{$c->filters};
+  is scalar(@dead), 0, 'every registered filter either shapes output or transforms the command'
+    or diag "does neither: @dead";
+
+  # Commands: one per filter, plus the compound form that made #25 visible.
+  my @programs = ('ls -la', 'cat f.txt', 'cpanm Some::Module', 'df -h', 'find . -name x',
+    'git diff', 'grep -rn x .', 'make all', 'ps aux', 'stat f.txt');
+  for my $key (sort keys %{$c->filters}) {
+    next unless $key =~ /^parsed:/;
+    my (undef, $program, $subcommand, $flagspec) = split /:/, $key, 4;
+    my @flags = map {
+      my ($name, $value) = split /=/, $_, 2;
+      (defined $value && $value ne '1') ? "--$name=$value" : "--$name";
+    } grep { length } split /,/, ($flagspec // '');
+    push @programs, join ' ', grep { defined && length } $program, $subcommand, @flags;
+  }
+  my @commands = (@programs, map { qq{$_ && git commit -m "fix"} } @programs);
+  cmp_ok scalar(@commands), '>=', 80, 'collision check spans the whole filter table, plain and compound';
+
+  my @collisions;
+  for my $command (@commands) {
+    my $parsed = $c->_parse_command($command);
+    # The real predicate, not a copy of it: a copy could not catch a table
+    # that collides. undef stdout ignores output_detect on purpose -- two
+    # filters that collide for the right output still collide.
+    my @matching = grep {
+      $shapes->($c->filters->{$_})
+        && $c->_filter_matches($_, $c->filters->{$_}, $command, $parsed, undef)
+    } sort keys %{$c->filters};
+
+    for my $kind ('parsed', 'legacy') {
+      my @same = grep { $kind eq 'parsed' ? /^parsed:/ : !/^parsed:/ } @matching;
+      push @collisions, "<$command> $kind: @same" if @same > 1;
+    }
+  }
+
+  is scalar(@collisions), 0, 'each command is claimed by at most one shaping filter per kind'
+    or diag "give these an explicit precedence rule:\n" . join("\n", @collisions);
+
+  done_testing;
+};
+
+sub _show {
+  my ($value) = @_;
+  return 'undef' unless defined $value;
+  my $shown = length($value) > 120 ? substr($value, 0, 120) . '...' : $value;
+  $shown =~ s/\n/\\n/g;
+  $shown =~ s/\r/\\r/g;
+  return "'$shown' (" . length($value) . " chars)";
+}
 
 done_testing;
