@@ -1,0 +1,68 @@
+---
+claimed_at: 2026-08-15T08:20:54Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T08:20:54Z
+created: 2026-08-15T06:13:00Z
+id: 21
+priority: medium
+started: 2026-08-15T07:44:14Z
+status: done
+title: MCP_RUN_TIMEOUT wird ungeprueft mit +0 geparst (Warnung, 0, Inf)
+updated: 2026-08-15T08:20:54Z
+---
+
+Gemessen Session 0a4d56b3, 2026-08-15. bin/mcp-run-bash Zeile 19-20:
+
+  if (defined $ENV{MCP_RUN_TIMEOUT} && length $ENV{MCP_RUN_TIMEOUT}) {
+    $args{timeout} = $ENV{MCP_RUN_TIMEOUT} + 0;
+
+Das '+ 0' nimmt jeden String an. Gemessen unter -w:
+
+  MCP_RUN_TIMEOUT='abc'    Warnung "isn't numeric", timeout=0
+  MCP_RUN_TIMEOUT='30s'    Warnung "isn't numeric", timeout=30
+  MCP_RUN_TIMEOUT='-5'     keine Warnung,           timeout=-5
+  MCP_RUN_TIMEOUT='  '     Warnung "isn't numeric", timeout=0
+  MCP_RUN_TIMEOUT='1e400'  keine Warnung,           timeout=Inf
+
+Drei getrennte Probleme:
+
+1. Perl-Warnungen landen auf stderr eines stdio-MCP-Servers. Das Protokoll
+   laeuft ueber stdout, es korrumpiert also nichts -- Rauschen im Client-Log
+   ist es trotzdem, und der Nutzer erfaehrt nirgends, dass sein Wert
+   verworfen wurde.
+
+2. Ein Tippfehler wird still zu einem falschen Wert. '30s' wird klaglos zu 30,
+   'abc' zu 0. Der Server startet in beiden Faellen und verhaelt sich anders
+   als konfiguriert.
+
+3. 'Inf' ist positiv und wird deshalb von der Nicht-Positiv-Pruefung aus #10
+   NICHT abgefangen. Es landet in alarm(). Was alarm(Inf) tut, ist nicht
+   spezifiziert -- der Timeout ist damit faktisch aus, also genau der
+   Serverblockade-Fall, den #10 schliessen sollte.
+
+Nach dem Fix aus #10 sind Punkt 1 und 2 fuer nicht-positive Werte entschaerft
+(0 und -5 fallen auf den Default), Punkt 3 bleibt offen, und die Warnungen
+bleiben in allen Faellen.
+
+Fix: den Env-Wert validieren statt zu addieren -- nur eine Folge von Ziffern
+akzeptieren, alles andere mit einer klaren Meldung ablehnen oder auf den
+Default zurueckfallen. Die Entscheidung sollte sich an dem orientieren, was
+#10 fuer den Modulpfad festgelegt hat; die beiden duerfen nicht auseinander-
+laufen.
+
+Betrifft nur bin/mcp-run-bash, nicht die Bibliothek. MCP_RUN_ALLOWED_COMMANDS,
+MCP_RUN_WORKING_DIRECTORY und MCP_RUN_TOOL_NAME sind Strings und unkritisch;
+MCP_RUN_COMPRESS wird bereits sauber gegen ein Muster geprueft.
+REVIEW ABGENOMMEN 2026-08-15 (main). Umgesetzt als Abbruch beim Start statt
+als stiller Rueckfall, abgedeckt von t/50-bash-bin.t (Server kommt nicht hoch,
+keine JSON-RPC-Antwort, Meldung nennt Variable und verworfenen Wert, keine
+numerische Warnung auf stderr).
+
+Die Abweichung zum Modulpfad aus #10 ist bewusst und in Changes begruendet:
+Env-Var ist Konfiguration, die ein Mensch geschrieben hat und die einmal beim
+Start geprueft wird -- da darf es laut scheitern. Der per-call-Timeout kommt
+mitten in der Sitzung vom Modell und faellt weiter still auf den Default
+zurueck, statt einen laufenden Server zu toeten. Die beiden laufen damit nicht
+auseinander, sie beantworten verschiedene Fragen. Einzige Verengung, benannt:
+'2.5' wird hier abgelehnt, waehrend der per-call-Pfad auf 3 aufrundet.
