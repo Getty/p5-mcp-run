@@ -1,0 +1,100 @@
+---
+claimed_at: 2026-08-15T08:32:31Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T08:32:31Z
+created: 2026-08-15T05:59:32Z
+id: 17
+priority: medium
+started: 2026-08-15T07:43:59Z
+status: done
+title: Filters.pm verspricht 31 Filter, die es nicht gibt
+updated: 2026-08-15T08:32:31Z
+---
+
+Gemessen Session 0a4d56b3, 2026-08-15. lib/MCP/Run/Compress/Filters.pm.
+
+Die Datei ist reine Dokumentation: sie wird von keiner Zeile Code geladen
+(einziges Vorkommen des Paketnamens ist ihre eigene package-Zeile) und von
+keinem Test geprueft. Nichts haelt sie mit der Filtertabelle in Compress.pm
+synchron -- entsprechend ist sie auseinandergelaufen.
+
+48 registrierte Filter, 70 im POD dokumentierte Commands.
+
+31 Commands sind dokumentiert, ohne dass ein Filter existiert. Stichprobe direkt
+gegen die Pipeline geprueft (300 Zeilen Rauschen als Eingabe, Ausgabe
+unveraendert = kein Filter greift):
+
+  du -sh /var             KEIN Filter
+  jq . datei.json         KEIN Filter
+  systemctl status nginx  KEIN Filter
+  docker-compose up       KEIN Filter
+  gcc -c foo.c            KEIN Filter
+  journalctl -u nginx     KEIN Filter
+  poetry install          KEIN Filter
+  uv sync                 KEIN Filter
+  mvn build               KEIN Filter
+
+Weitere dokumentierte ohne Filter: brew install, composer install, cpm,
+fail2ban-client, gcloud, iptables -l, jira, jj, just, mise, mix compile,
+ollama run, pio run, quarto render, shopify theme push, sops, swift build,
+tofu plan, ty, webpack, yamllint.
+
+Umgekehrt sind 10 existierende Filter nicht dokumentiert: docker images,
+helm upgrade, ip link, ip route, pnpm add, pnpm install, terraform apply,
+yarn add, yarn install sowie der git-commit-command_transform.
+
+Warum das mehr als Kosmetik ist: die Datei heisst "Command Output Compression
+Reference" und ist in CLAUDE.md als "Alle Filter mit POD" verlinkt. Wer prueft,
+ob sein Werkzeug unterstuetzt wird, liest hier -- und bekommt bei einem Drittel
+der Eintraege eine falsche Antwort. Auf CPAN ist das die sichtbare
+Produktbeschreibung.
+
+PRODUKTENTSCHEIDUNG, nicht vom Agenten zu treffen -- zwei Wege:
+ (a) Doku auf die Realitaet zusammenstreichen: die 31 haltlosen Eintraege raus,
+     die 10 fehlenden nachtragen. Klein, ehrlich, sofort machbar.
+ (b) Die 31 Filter tatsaechlich bauen. Deutlich mehr Arbeit, macht die Doku aber
+     zur Zusage statt zur Korrektur.
+
+Unabhaengig vom Weg gehoert eine Absicherung dazu, sonst laeuft es wieder
+auseinander: ein Test, der die =item-Eintraege im POD gegen die registrierten
+Filter-Keys abgleicht. Dann kann der Drift nicht mehr unbemerkt zurueckkehren.
+Ohne diesen Test ist jede Bereinigung nur eine Momentaufnahme.
+REVIEW 2026-08-15 (main): Umsetzung ist sauber, aber die PRODUKTENTSCHEIDUNG
+liegt beim Maintainer und wird ihm hiermit vorgelegt. Bleibt bis dahin in review.
+
+WAS UMGESETZT IST -- gemischter Weg, ueberwiegend (b):
+
+  Filtertabelle:  48 -> 74 registrierte Filter
+  POD:            75 =item-Eintraege
+  Stichprobe live gegen die Pipeline (300 Zeilen Rauschen als Eingabe):
+    du -sh /var, systemctl status nginx, gcc -c foo.c, journalctl -u nginx,
+    poetry install, uv sync, mvn build, shopify theme push  -> Filter greift
+    jq . datei.json -> kein Filter, aber auch nicht mehr dokumentiert
+
+Also: die meisten der 31 haltlosen Eintraege wurden tatsaechlich gebaut, einzelne
+(jq) stattdessen aus der Doku gestrichen. Beides zusammen ist konsistent.
+
+DIE ABSICHERUNG IST DA und ist das Beste an dem Vorgang: t/60-filters-doc.t
+'documentation and filter table agree' rechnet beide Richtungen gegeneinander --
+dokumentiert-ohne-Filter und Filter-ohne-Doku -- und erklaert im diag, was zu tun
+ist. Der Drift kann so nicht unbemerkt zurueckkehren, genau wie das Ticket es
+verlangt hat.
+
+ZWEI PUNKTE FUER DIE ENTSCHEIDUNG:
+
+1. Weg (b) war ausdruecklich als 'deutlich mehr Arbeit' und als nicht vom
+   Agenten zu treffen markiert. 26 neue Filter sind Produktumfang, kein
+   Bugfix -- sie erweitern die Zusage, die MCP-Run auf CPAN macht.
+
+2. Die neuen Filter sind auf DOKU-Abgleich getestet, nicht auf VERHALTEN.
+   t/compress.t erwaehnt poetry, uv, mvn, journalctl, systemctl, du mit keinem
+   einzigen Vorkommen. Dass ein Filter greift, ist gemessen; dass er das
+   Richtige behaelt, ist es nicht. Bei einem davon ist genau daraus schon ein
+   Defekt entstanden: der neue shopify-Filter setzt tail_lines ohne head_lines
+   und kuerzt dadurch still 55 von 60 Zeilen weg -- erfasst als #31.
+
+EMPFEHLUNG: Weg (b) behalten, wenn der Maintainer den groesseren Produktumfang
+will -- dann aber Verhaltenstests fuer die 26 neuen Filter nachziehen, sonst ist
+die Doku zwar keine Luege mehr, die Filter sind aber ungeprueft. Will er (a),
+ist das jetzt teurer als vor dem Umbau.
