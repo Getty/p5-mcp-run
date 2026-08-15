@@ -1,0 +1,52 @@
+---
+claimed_at: 2026-08-15T09:08:47Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T09:08:47Z
+created: 2026-08-15T08:24:57Z
+id: 31
+priority: medium
+started: 2026-08-15T08:33:37Z
+status: done
+title: tail_lines ohne head_lines kuerzt still -- der Zweig ist nicht mehr tot
+updated: 2026-08-15T09:08:47Z
+---
+
+Ausgegliedert aus #14 (zweiter, unabhaengiger Punkt) beim Review 2026-08-15,
+und der Anlass ist neu: der Zweig ist inzwischen erreichbar geworden.
+
+#14 hatte ihn als latent eingestuft, mit der ausdruecklichen Begruendung 'kein
+einziger der 48 Filter setzt heute tail_lines ohne head_lines, der Zweig ist
+also tot'. Das stimmt nicht mehr. Nachgezaehlt ueber die laufende Filtertabelle:
+
+  head_lines OHNE tail_lines: 0 Filter   (dieser Zweig ist tot)
+  tail_lines OHNE head_lines: 1 Filter   -> ^shopify\s+theme\s+(?:push|pull)\b
+  beide:                      1 Filter   -> parsed:git:log:
+
+Der shopify-Filter (tail_lines => 5) duerfte im Zuge von #17 entstanden sein --
+'shopify theme push' stand dort auf der Liste der dokumentierten, aber nicht
+existierenden Filter. Damit ist der stille Pfad aktiv, ohne dass es jemandem
+auffallen musste.
+
+Gemessen an lib/MCP/Run/Compress.pm (Stage 8, elsif-Zweig):
+
+  Eingabe:  60 Zeilen, 'zeile 1' .. 'zeile 60', Command 'shopify theme push'
+  Ausgabe:  zeile 56 .. zeile 60
+  Marker:   KEINER -- 55 Zeilen sind spurlos weg
+
+Zum Vergleich kuerzen alle anderen Pfade sichtbar: '... N lines omitted ...'
+(head+tail) und '... N more lines ...' (max_lines). Nur hier fehlt der Hinweis.
+
+Warum das mehr als Kosmetik ist: still zu kuerzen ist genau das, was dieses
+Produkt beim Modell vermeiden will -- das Modell haelt die letzten 5 Zeilen fuer
+die ganze Ausgabe und hat keinen Anhaltspunkt nachzufragen. Bei 'shopify theme
+push' steht der interessante Teil (was hochgeladen wurde, welche Datei
+kollidierte) typischerweise oben.
+
+FIX: Marker nachruesten, analog zu den Nachbarzweigen, etwa
+'... N lines omitted ...' vor den behaltenen Zeilen. Der head_lines-ohne-tail-
+Zweig (Zeile ~1756) hat dasselbe Loch und ist heute tot -- am besten gleich
+mitnehmen, dann kann er nicht auf demselben Weg wieder aufwachen.
+
+Test: t/compress.t, ein Filter mit tail_lines ohne head_lines gegen eine
+Eingabe, die laenger ist als tail_lines, Erwartung ist ein sichtbarer Marker.
