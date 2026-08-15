@@ -1,0 +1,61 @@
+---
+claimed_at: 2026-08-15T08:20:47Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T08:20:47Z
+created: 2026-08-15T06:08:12Z
+id: 19
+priority: high
+started: 2026-08-15T06:09:26Z
+status: done
+title: Defekte Installation blockiert das gesamte Bash-Tool statt nur die Compression
+updated: 2026-08-15T08:20:47Z
+---
+
+Reproduziert Session 0a4d56b3, 2026-08-15. bin/mcp-run-compress.
+
+Das Skript laedt seine Abhaengigkeiten zur Compile-Zeit (use JSON::MaybeXS,
+MCP::Run::Bash, MCP::Run::Compress, Path::Tiny, ...). Fehlt eine davon, stirbt
+es, bevor eine einzige Zeile Laufzeitcode ausgefuehrt wird. Gemessen mit
+kaputtem @INC:
+
+  --hook  ->  stdout leer (0 Bytes), exit 2
+  --b64   ->  stdout leer,           exit 2
+
+Exit 2 ist bei einem Claude-Code-PreToolUse-Hook nicht "Fehler", sondern
+"Tool-Call blockieren". Eine defekte oder halb aktualisierte Perl-Installation
+legt damit nicht die Compression stumm -- sie legt das gesamte Bash-Tool des
+Nutzers still, in jeder Session, bei jedem Command, bis er es von Hand
+repariert. Der --b64-Pfad ist genauso betroffen: eine bereits umgeschriebene
+Command liefert dann leere Ausgabe und exit 2 statt des Ergebnisses.
+
+DAS IST KEIN GEDANKENSPIEL. Genau dieser Zustand lag heute auf der
+Entwicklungsmaschine vor: MCP und Text::Trim fehlten komplett im @INC, obwohl
+beide im cpanfile stehen. Waere der Hook nativ installiert gewesen, waere jede
+Bash-Command in jeder Claude-Session blockiert gewesen. Ein unterbrochenes
+cpanm-Upgrade oder ein Perl-Versionswechsel reicht.
+
+Der Hook gehoert fail-open gebaut: kann er nicht arbeiten, soll er die Command
+unveraendert durchlassen (leere Antwort, exit 0) und hoechstens auf stderr
+mucken. Unkomprimierte Ausgabe ist ein kleiner Schaden, eine blockierte Shell
+ein grosser. Dafuer muessen die Module fuer den --hook-Pfad zur Laufzeit
+geladen werden (require in eval) statt zur Compile-Zeit; ein reiner
+eval-Block um run_hook() reicht nicht, weil use frueher scheitert.
+
+ABGRENZUNG, die ausdruecklich stehenbleiben muss: MCP::Run laedt
+MCP::Run::Compress bewusst zur Compile-Zeit, damit ein kaputter Compressor den
+SERVER beim Start umbringt statt beim ersten tools/call (siehe Sharp Edges in
+CLAUDE.md und Changes 0.106). Das ist fuer den Server richtig und bleibt so.
+Der Hook ist der umgekehrte Fall: er sitzt im kritischen Pfad des Bash-Tools
+und darf niemals blockieren. Die beiden Defaults NICHT angleichen -- so wie
+auch die beiden Compression-Defaults absichtlich auseinanderlaufen.
+
+Test: bin/mcp-run-compress als Subprozess mit kaputtem @INC starten und exit 0
+plus unveraendert durchgelassene Command erwarten. t/40-compress-bin.t faehrt
+das Skript ohnehin schon als Subprozess.
+REVIEW ABGENOMMEN 2026-08-15 (main). Mit kaputtem @INC live geprueft:
+exit 0, Pass-Through-Antwort auf stdout, eine Diagnosezeile auf stderr.
+Blockiert Bash nicht mehr.
+REVIEW ABGENOMMEN 2026-08-15 (main). Mit kaputtem @INC live geprueft: exit 0,
+Pass-Through-Antwort auf stdout, eine Diagnosezeile auf stderr. Blockiert das
+Bash-Tool nicht mehr.
