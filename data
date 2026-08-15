@@ -1,0 +1,42 @@
+---
+claimed_at: 2026-08-15T08:21:09Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T08:21:09Z
+created: 2026-08-15T06:18:27Z
+id: 23
+priority: medium
+started: 2026-08-15T07:44:27Z
+status: done
+title: compress() und process() sind zwei Kopien derselben 11-Stufen-Pipeline
+updated: 2026-08-15T08:21:09Z
+---
+
+Wartungsrisiko, vom Worker bei #16 benannt (Session 0a4d56b3, 2026-08-15).
+lib/MCP/Run/Compress.pm.
+
+compress() und process() implementieren beide dieselbe elfstufige Pipeline,
+einmal in Listen- und einmal in Hashref-Form. Beide mussten fuer #16 getrennt
+angefasst werden; das Gleiche galt fuer die command_transform-Behandlung, die
+an drei Stellen parallel steht (Zeilen ~947, ~1101 und in transform_command).
+
+Warum das mehr ist als Doppelung: das Balken-Loch aus #16 wurde ueber Jahre
+nicht bemerkt, und ein Fix, der nur eine der beiden Kopien trifft, faellt
+niemandem auf -- die Testsuite fasst compress() ueber t/compress.t an und
+process() ueber t/30-no-warnings.t, also nicht in denselben Faellen. Jede
+kuenftige Stufe hat dieselbe Falle.
+
+Aufwand: rein mechanisch, aber nicht klein -- die gemeinsame Pipeline
+herausziehen und beide Einstiegspunkte darauf setzen. Kein Verhaltenswechsel
+beabsichtigt; die Absicherung waere ein Test, der fuer dieselbe Eingabe
+compress() und process() vergleicht und auf Gleichheit besteht. Der gehoert
+sogar VOR den Umbau -- dann beweist er, dass der Umbau nichts verschiebt.
+
+Nicht dringend, waechst aber mit jeder Stufe. Jetzt aufschreiben, damit es
+nicht wieder auffaellt, wenn es zu spaet ist.
+REVIEW ABGENOMMEN 2026-08-15 (main). Der Umbau ist so abgesichert, wie das
+Ticket es verlangt hat: der Aequivalenztest kam VOR dem Merge und vergleicht
+compress() gegen process() ueber 54 Commands x 16 Ausgabeformen x 4
+stderr-Varianten (3456 Vergleiche, t/compress.t 'compress() and process() are
+the same pipeline'). Er schlaegt laut Changes bei einer eingebauten Divergenz in
+beide Richtungen an.
