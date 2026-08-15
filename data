@@ -1,0 +1,49 @@
+---
+claimed_at: 2026-08-15T08:31:23Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T08:20:11Z
+created: 2026-08-15T05:45:42Z
+id: 12
+priority: low
+started: 2026-08-15T05:48:28Z
+status: done
+title: 'Kleinkram: uninitialized-Warnung bei leerem Command, Skill wird nicht wiederhergestellt'
+updated: 2026-08-15T08:31:23Z
+---
+
+Zwei kleine, unabhaengige Funde aus derselben Durchsicht (Session 0a4d56b3,
+2026-08-15).
+
+1) lib/MCP/Run.pm Zeile 163 -- uninitialized-Warnung.
+Bei gesetztem allowed_commands und leerem oder reinem Whitespace-Command matcht
+/^\s*(\S+)/ nicht, $first_word bleibt undef und wird in
+"Command not allowed: $first_word" interpoliert. Gemessen:
+
+  command=''      -> "Command not allowed: "  + 1 Warnung
+  command='   '   -> "Command not allowed: "  + 1 Warnung
+  Use of uninitialized value $first_word in concatenation at lib/MCP/Run.pm line 163
+
+Genau die Klasse Regression, fuer die t/30-no-warnings.t existiert -- dort faellt
+sie heute nicht auf, weil der Fall nicht getestet wird. Nebenbei liest sich die
+Meldung mit leerem Namen schlecht; "Command not allowed: (empty command)" o. ae.
+waere brauchbarer.
+
+2) bin/mcp-run-compress --install-claude stellt einen geloeschten Skill nicht
+wieder her.
+Die Idempotenz-Pruefung (Zeilen 178-187) macht 'return 0' mit "Already
+installed", sobald der PreToolUse-Hook gefunden wird. Der Skill unter
+~/.claude/skills/bash-output-is-compressed-.../SKILL.md wird erst danach
+geschrieben (Zeilen 202-224). Wer den Skill loescht und --install-claude erneut
+aufruft, bekommt ihn nicht zurueck -- der Aufruf meldet Erfolg und tut nichts.
+Der Skill ist aber genau das, was dem Modell erklaert, dass es komprimierte
+Ausgabe sieht und wie es mit 'no-compress ' aussteigt; fehlt er, ist die
+Compression fuer das Modell unsichtbar.
+
+Fix: den Skill-Zweig vor das fruehe return ziehen bzw. beide Schritte
+unabhaengig voneinander idempotent machen.
+REVIEW ABGENOMMEN 2026-08-15 (main). Beide Teile belegt: die
+uninitialized-Warnung durch t/30-no-warnings.t ('allowed_commands: empty command
+does not warn', dazu der Nachbarfall 'a first word of "0" is not treated as
+empty'), die Skill-Wiederherstellung durch t/40-compress-bin.t ('install:
+restores a deleted skill even when the hooks are present').
