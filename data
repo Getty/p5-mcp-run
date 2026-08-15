@@ -1,0 +1,46 @@
+---
+claimed_at: 2026-08-15T09:08:20Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T09:08:20Z
+created: 2026-08-15T08:22:02Z
+id: 29
+priority: medium
+started: 2026-08-15T08:43:27Z
+status: done
+title: Drei match_output-Muster feuern nie (fehlendes /m)
+updated: 2026-08-15T09:08:20Z
+---
+
+Gefunden von einem Worker bei #17, von mir nachgemessen (Session 325827e5,
+2026-08-15). lib/MCP/Run/Compress.pm.
+
+match_output ist ein Kurzschluss: passt das Muster auf die GESAMTE Ausgabe,
+wird sie durch eine Standardmeldung ersetzt. Die Muster sind aber ohne /m
+geschrieben, also bedeutet ^ dort Stringanfang und nicht Zeilenanfang:
+
+  ^cpanm\b   (?^u:^\s*Successfully installed)          -> "cpanm: ok"
+  ^make\b    (?^u:^make\[\d+\]:.*?make\[\d+\]:)        -> "make: circular dependency detected"
+  ^make\b    (?^u:^gcc.*?Error)                        -> "make: compilation error"
+
+Sie koennen also nur feuern, wenn der Text in der allerersten Zeile steht --
+was er nie tut. cpanm schreibt vorher "--> Working on ...", "Fetching",
+"Configuring", "Building". Praxistest mit realistischer Ausgabe: kein
+Kurzschluss, 73 Bytes statt "cpanm: ok".
+
+Die Filter tun also seit jeher etwas anderes als dokumentiert. Kein Schaden --
+die Ausgabe wird nur weniger stark komprimiert als vorgesehen -- aber drei
+Zusicherungen, die nicht eingeloest werden.
+
+Fix: /m an die drei Muster. ACHTUNG, das ist eine echte Verhaltensaenderung:
+danach greifen Kurzschluesse, die heute nie greifen, und die Ausgabe von
+cpanm und make wird auf eine Zeile eingedampft. Genau das war die Absicht,
+aber es sollte bewusst freigegeben und getestet werden, nicht nebenbei
+repariert. Insbesondere '^gcc.*?Error' mit /m ist breit -- es ersetzt die
+GANZE make-Ausgabe durch "make: compilation error", sobald irgendeine Zeile
+mit gcc beginnt und spaeter Error enthaelt. Beim Debuggen eines Buildfehlers
+ist das genau die Ausgabe, die man sehen will. Vor dem Aktivieren pruefen, ob
+der Kurzschluss dort ueberhaupt richtig ist.
+
+Die in #17 neu gebauten Kurzschluesse (quarto render, tofu init) setzen /m
+bereits explizit.
