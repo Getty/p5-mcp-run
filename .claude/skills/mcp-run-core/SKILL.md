@@ -96,7 +96,7 @@ command-spezifischen Filter nicht.
 
 11-Stage Filter-Pipeline in `MCP::Run::Compress`:
 
-`strip_ansi → collapse_cr → filter_stderr → match_output → transform → strip_lines → keep_lines → truncate → head/tail → max_lines → on_empty`
+`filter_stderr → strip_ansi → collapse_cr → match_output → transform → strip_lines → keep_lines → truncate → head/tail → max_lines → on_empty`
 
 `collapse_cr` ist unkonditional und kennt kein Filter-Attribut. Grund: ein
 Fortschrittsbalken ist für `split /\n/` eine einzige Zeile, `max_lines` greift

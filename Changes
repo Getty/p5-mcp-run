@@ -67,6 +67,61 @@ Revision history for MCP-Run
     git-commit filter shapes no output at all -- it exists purely for
     its transform -- so it no longer takes part in choosing an output
     filter, and both now apply.
+  - Stop the make filter from eating its own error lines. Its strip
+    list discarded every `make[N]:` line, which was aimed at the
+    Entering/Leaving directory chatter of a recursive build but took
+    with it the line naming the failed target and Makefile line, the
+    `No rule to make target` stop, the circular-dependency warning, and
+    the "not remade because of errors" summary. On a failed recursive
+    build the only survivor was the top-level `Error 2` -- the fact that
+    it broke, with the answer to *where* removed. The rule now names the
+    two chatter forms it was meant for, so a no-op build across twenty
+    subdirectories still compresses to `make: ok`. Every other filter's
+    strip list was checked the same way -- 322 patterns against 41
+    shapes a diagnosis takes -- and make was the only one; a test keeps
+    it that way, with an exception list that is empty on purpose.
+  - Drop three match_output short-circuits that never fired and should
+    not have. All three were written without /m, so `^` meant start of
+    string and none could ever match past the first line -- `cpanm: ok`
+    has never once been emitted. Adding /m was the obvious repair and
+    the wrong one. The cpanm pattern would then fire on a run where one
+    distribution failed to build, replacing the output -- including the
+    only line mentioning the failure -- with `cpanm: ok`: not a missing
+    hint but a false statement. The make circular-dependency pattern
+    needs two `make[N]:` on one line, which never happens, and reports a
+    warning as though the build had stopped. The gcc one looks for a
+    capital `Error` on a line starting with `gcc`, and gcc writes
+    lowercase `error:` after the filename. Behaviour is unchanged by
+    their removal, precisely because they never fired; what is gone is
+    three promises. The rule they violated is now written down:
+    match_output replaces the *entire* output, so it is only ever honest
+    for success, when there is nothing left to say. A test refuses any
+    match_output pattern that anchors without /m.
+  - Reject unknown attributes in register_filter instead of storing them
+    in silence. `replace` had been accepted and never read since it was
+    added; a typo in a filter definition behaved exactly the same way.
+    `replace` is removed -- rewriting lines is `transform`, replacing
+    everything is `match_output`, discarding lines is
+    `strip_lines_matching`. Note for anyone calling register_filter from
+    outside: an unknown attribute is now fatal rather than ignored.
+  - Refuse a parsed filter that shadows a more specific one. A filter
+    naming only a program matches every subcommand too, and the
+    selection stops at the first parsed filter it finds, so a bare
+    `kubectl` entry would decide `kubectl get` by hash order. The table
+    has no such pair today -- the filters added here deliberately avoid
+    it -- and now a test says so rather than a comment.
+  - Say so when the head of the output was dropped. The tail-only
+    truncation branch cut silently while every neighbouring path
+    announces itself, and it stopped being dead code in this very
+    release: the new `shopify theme push` filter keeps the last five
+    lines, so sixty lines arrived as five with nothing to suggest the
+    other fifty-five had existed. Silent truncation is the exact failure
+    this tool exists to prevent -- the model takes what it is given for
+    the whole output and has no reason to ask. The marker now leads the
+    kept lines, where the following max_lines stage cannot cut it off
+    and leave a number that lies. A test walks the filter table and
+    insists that anything which truncates also says so; it found the
+    shopify case on its own rather than being told about it.
   - Fix head_lines/tail_lines truncating to nothing. `min($n, @lines)`
     flattens the array into min's argument list, so it compared the line
     limit against the line *contents*: text lines yielded 0 and the

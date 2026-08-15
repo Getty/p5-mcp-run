@@ -4,6 +4,7 @@ use MCP::Run::Compress;
 use File::Temp qw(tempdir);
 use File::Basename qw(dirname);
 use File::Spec;
+use List::Util qw(min);
 
 subtest 'compress ls -la' => sub {
   my $c = MCP::Run::Compress->new;
@@ -867,6 +868,502 @@ subtest 'no two output-shaping filters compete for the same command' => sub {
     or diag "give these an explicit precedence rule:\n" . join("\n", @collisions);
 
   done_testing;
+};
+
+subtest 'tail_lines without head_lines says that it dropped the beginning' => sub {
+  # karr #31: the branch was written off as dead ("no filter sets
+  # tail_lines without head_lines"), and then `shopify theme push` became
+  # exactly that filter. It kept the last five lines and said nothing --
+  # the model reads five lines as the whole output and has no reason to
+  # ask. For `shopify theme push` the interesting part (what uploaded,
+  # what collided) is at the top.
+  my $c = MCP::Run::Compress->new;
+
+  my $input = join("\n", map { "zeile $_" } 1 .. 60);
+  my ($out, $err) = $c->compress('shopify theme push', $input, '');
+  note "OUTPUT: $out";
+
+  my @lines = split /\n/, $out;
+  is scalar(@lines), 6, 'the five kept lines plus the marker';
+  is $lines[0], '... 55 lines omitted ...',
+    'the marker leads, because it is the beginning that is missing';
+  is $lines[-1], 'zeile 60', 'the tail itself is untouched';
+  is scalar(grep { /^zeile / } @lines), 5, 'exactly tail_lines content lines';
+};
+
+subtest 'head_lines without tail_lines says that it dropped the end' => sub {
+  # No filter in the table takes this branch today. It is fixed in the
+  # same pass as the tail-only one so the hole cannot reopen here later
+  # (karr #31), which means the test has to bring its own filter.
+  my $c = MCP::Run::Compress->new;
+  $c->register_filter(command => '^probe-head\b', head_lines => 5);
+
+  my $input = join("\n", map { "zeile $_" } 1 .. 60);
+  my ($out, $err) = $c->compress('probe-head', $input, '');
+  note "OUTPUT: $out";
+
+  my @lines = split /\n/, $out;
+  is scalar(@lines), 6, 'the five kept lines plus the marker';
+  is $lines[0], 'zeile 1', 'the head itself is untouched';
+  is $lines[-1], '... 55 lines omitted ...',
+    'the marker trails, because it is the end that is missing';
+
+  # Below the cap nothing is dropped, so nothing may be claimed.
+  my ($short) = $c->compress('probe-head', join("\n", map { "zeile $_" } 1 .. 5), '');
+  unlike $short, qr/omitted/, 'no marker when nothing was dropped';
+};
+
+subtest 'a count marker never outlives the lines it counts' => sub {
+  # The two stages that cap by line count run back to back: stage 8
+  # (head/tail) hands its output to stage 9 (max_lines), and stage 9
+  # always keeps the FIRST max_lines lines. A marker stage 8 put at the
+  # front therefore survives; one it put at the end can be cut away again.
+  #
+  # That is why the tail-only marker leads and why max_lines <= head_lines
+  # is a broken filter config: it makes head_lines redundant AND lets
+  # stage 9 eat the head/tail marker, leaving a "... 1 more lines ..."
+  # that counts the marker as if it were output. Guard the config rather
+  # than teach stage 9 about markers.
+  my $c = MCP::Run::Compress->new;
+
+  my @broken = grep {
+    my $f = $c->filters->{$_};
+    $f->{head_lines} && $f->{max_lines} && $f->{max_lines} <= $f->{head_lines};
+  } sort keys %{$c->filters};
+  is scalar(@broken), 0, 'no filter sets max_lines at or below head_lines'
+    or diag "these would let max_lines cut the head/tail marker: @broken";
+
+  # git log is the one filter with head+tail: 20 + marker + 10 = 31 lines
+  # into stage 9, which caps at 30. The marker sits at line 21 and has to
+  # come through -- and both counts have to be about real lines.
+  my $input = join("\n", map { "zeile $_" } 1 .. 60);
+  my ($out) = $c->compress('git log', $input, '');
+  note "OUTPUT: $out";
+  my @lines = split /\n/, $out;
+  is $lines[20], '... 30 lines omitted ...', 'the head/tail marker survives max_lines';
+  is $lines[-1], '... 1 more lines ...', 'and max_lines reports its own cut on top';
+
+  # A tail-only filter whose max_lines bites into the tail: the leading
+  # marker still counts what stage 8 dropped, not what is left.
+  $c->register_filter(command => '^probe-tail\b', tail_lines => 5, max_lines => 3);
+  my ($capped) = $c->compress('probe-tail', $input, '');
+  note "OUTPUT: $capped";
+  my @capped = split /\n/, $capped;
+  is $capped[0], '... 55 lines omitted ...', 'leading marker survives max_lines';
+  is $capped[-1], '... 3 more lines ...', 'and max_lines reports its own cut';
+};
+
+subtest 'every filter that caps by line count says when it cut' => sub {
+  # The invariant behind karr #31, over the whole table rather than the
+  # one filter that tripped it: a filter may drop lines by CONTENT
+  # silently -- that is the product -- but dropping them by COUNT leaves
+  # the model holding a fragment it will read as the whole output. So
+  # every count cap has to leave a marker behind.
+  my $c = MCP::Run::Compress->new;
+  my $marker = qr/\.\.\. \d+ (?:lines omitted|more lines) \.\.\./;
+
+  # One command per filter, derived from the key the way the collision
+  # subtest above does it -- a guess is harmless, because _match_filter
+  # below rejects a command that lands on a different filter.
+  my $probe_command = sub {
+    my ($key) = @_;
+    if ($key =~ /^parsed:/) {
+      my (undef, $program, $subcommand, $flagspec) = split /:/, $key, 4;
+      my @flags = map {
+        my ($name, $value) = split /=/, $_, 2;
+        (defined $value && $value ne '1') ? "--$name=$value" : "--$name";
+      } grep { length } split /,/, ($flagspec // '');
+      return join ' ', grep { defined && length } $program, $subcommand, @flags;
+    }
+    my $sample = $key;
+    $sample =~ s/^\^//;
+    $sample =~ s/\(\?:([^|)]+)\|[^)]*\)/$1/g;
+    $sample =~ s/\\s[+*]/ /g;
+    $sample =~ s/\\b//g;
+    return $sample;
+  };
+
+  # Bland probe content reaches every capped filter but this one: ls only
+  # applies when its output_detect sees an `ls -l` listing, and a listing
+  # is not something this loop can synthesize generically. Covered by the
+  # 'compress ls -la' subtest above. Listed by name so a filter that drops
+  # out of the loop later has to be justified here rather than vanish.
+  my %unprobeable = ('^ls\b' => 'output_detect wants an ls -l listing');
+
+  my (@exercised, @silent, @unreachable);
+  for my $key (sort keys %{$c->filters}) {
+    my $filter = $c->filters->{$key};
+
+    # The largest input that still fits under every cap this filter sets:
+    # stage 8 cuts above head_lines + tail_lines, stage 9 above max_lines.
+    my @caps;
+    push @caps, $filter->{head_lines} + $filter->{tail_lines}
+      if $filter->{head_lines} || $filter->{tail_lines};
+    push @caps, $filter->{max_lines} if $filter->{max_lines};
+    next unless @caps;
+    my $keep = min(@caps);
+
+    my $command = $probe_command->($key);
+    if (($c->_match_filter($command, '') // 0) != $filter) {
+      push @unreachable, "$key: <$command> lands on another filter"; next;
+    }
+
+    # Under the cap the probe content has to come through line for line.
+    # Otherwise an earlier stage is eating it and any loss further down
+    # cannot be attributed to the cap -- that is a skip, not a failure.
+    my $small = join "\n", map { "probe line $_" } 1 .. $keep;
+    my ($out_small) = $c->compress($command, $small, '');
+    my @small = split /\n/, $out_small // '';
+    if (@small != $keep) {
+      push @unreachable, "$key: content does not survive the earlier stages"; next;
+    }
+
+    my $big = join "\n", map { "probe line $_" } 1 .. $keep + 25;
+    my ($out_big) = $c->compress($command, $big, '');
+    my @big = split /\n/, $out_big // '';
+    if (@big >= $keep + 25) {
+      push @unreachable, "$key: nothing was dropped at " . ($keep + 25) . " lines"; next;
+    }
+
+    push @exercised, $key;
+    push @silent, "$key: kept " . scalar(@big) . " of " . ($keep + 25) . " lines silently"
+      unless $out_big =~ $marker;
+  }
+
+  is scalar(@silent), 0, 'no filter drops lines by count without saying so'
+    or diag join "\n", @silent;
+
+  @unreachable = grep { my $u = $_; !grep { $u =~ /^\Q$_\E:/ } keys %unprobeable } @unreachable;
+  is scalar(@unreachable), 0, 'every capped filter is reachable with bland probe content'
+    or diag join "\n", @unreachable;
+
+  ok exists $c->filters->{$_}, "unprobeable exception $_ still exists" for sort keys %unprobeable;
+
+  cmp_ok scalar(@exercised), '>=', 70, 'the invariant covers the whole filter table'
+    or diag 'exercised: ' . scalar(@exercised);
+};
+
+subtest 'match_output short-circuits are anchored per line and only report success' => sub {
+  # karr #29. match_output replaces the ENTIRE output with one message, so
+  # it carries two obligations, and three patterns kept neither.
+  #
+  # 1. Written without /m, `^` is the start of the whole output, not of a
+  #    line -- so the pattern can only fire when the text is on the very
+  #    first line, which for cpanm and make it never is.
+  # 2. Replacing everything is only honest when there is nothing left to
+  #    say, i.e. for a success. A diagnostic short-circuit deletes exactly
+  #    the diagnosis the user is reading the output for.
+  my $c = MCP::Run::Compress->new;
+
+  my @unanchored;
+  for my $key (sort keys %{$c->filters}) {
+    for my $match (@{$c->filters->{$key}{match_output} // []}) {
+      my $re = $match->{pattern};
+      my ($flags) = ("$re" =~ /\A\(\?\^([a-zA-Z]*)[:)]/);
+      my ($source) = ("$re" =~ /\A\(\?\^[a-zA-Z]*:(.*)\)\z/s);
+
+      # Only `^`/`$` outside a character class and not escaped make /m
+      # matter -- an unanchored pattern like `has been initialized!` is
+      # fine either way.
+      my $probe = $source // '';
+      $probe =~ s/\\.//gs;
+      $probe =~ s/\[(?:[^\]\\]|\\.)*\]//gs;
+      next unless $probe =~ /[\^\$]/;
+
+      push @unanchored, "$key: $re" unless defined $flags && index($flags, 'm') >= 0;
+    }
+  }
+  is scalar(@unanchored), 0, 'every anchored match_output pattern is a per-line anchor'
+    or diag "these anchor on the whole output, so they never fire:\n" . join "\n", @unanchored;
+
+  # The tripwire for obligation 2, in the form the bug would take: adding
+  # /m to `^\s*Successfully installed` makes it fire -- and its very first
+  # realistic firing is a run where one distribution failed. `cpanm: ok`
+  # would be a straight lie, and the line naming the broken dependency is
+  # the only place the failure is visible at all.
+  my $partial = <<'OUTPUT';
+--> Working on Try::Tiny
+Fetching http://www.cpan.org/authors/id/E/ET/ETHER/Try-Tiny-0.31.tar.gz ... OK
+Configuring Try-Tiny-0.31 ... OK
+Building and testing Try-Tiny-0.31 ... OK
+Successfully installed Try-Tiny-0.31
+--> Working on Broken::Dep
+Fetching http://www.cpan.org/authors/id/X/XX/XXX/Broken-Dep-1.00.tar.gz ... OK
+Configuring Broken-Dep-1.00 ... OK
+Building and testing Broken-Dep-1.00 ... FAIL
+! Installing Broken::Dep failed. See /home/getty/.cpanm/work/1755/build.log for details. Retry with --force to force install it.
+1 distribution installed
+OUTPUT
+  my ($out) = $c->compress('cpanm --installdeps .', $partial, '');
+  note "OUTPUT: $out";
+  like $out, qr/Installing Broken::Dep failed/,
+    'a failed distribution survives compression';
+  like $out, qr/Successfully installed Try-Tiny-0\.31/,
+    'and so does the one that worked';
+
+  # Success needs no short-circuit here: the strip list already reduces it
+  # to the two lines that carry the answer, and they name the version.
+  my $success = <<'OUTPUT';
+--> Working on Try::Tiny
+Fetching http://www.cpan.org/authors/id/E/ET/ETHER/Try-Tiny-0.31.tar.gz ... OK
+Configuring Try-Tiny-0.31 ... OK
+Building and testing Try-Tiny-0.31 ... OK
+Successfully installed Try-Tiny-0.31
+1 distribution installed
+OUTPUT
+  my ($ok) = $c->compress('cpanm Try::Tiny', $success, '');
+  note "OUTPUT: $ok";
+  is $ok, "Successfully installed Try-Tiny-0.31\n1 distribution installed",
+    'a clean cpanm run compresses to its own result line';
+
+  # Same obligation on the make side: a build that failed to compile must
+  # come back with the compiler diagnosis, not with a summary of it.
+  my $broken_build = <<'OUTPUT';
+make[1]: Entering directory '/home/getty/dev/thing/src'
+gcc -Wall -O2 -c -o parser.o parser.c
+gcc -Wall -O2 -c -o lexer.o lexer.c
+lexer.c: In function 'scan_token':
+lexer.c:142:9: error: 'token_kind' undeclared (first use in this function)
+  142 |         token_kind = TOK_IDENT;
+lexer.c:142:9: note: each undeclared identifier is reported only once
+make[1]: Leaving directory '/home/getty/dev/thing/src'
+make: *** [Makefile:7: all] Error 2
+OUTPUT
+  my ($build) = $c->compress('make', $broken_build, '');
+  note "OUTPUT: $build";
+  like $build, qr/lexer\.c:142:9: error: 'token_kind' undeclared/,
+    'the compiler diagnosis survives compression';
+  like $build, qr/\QError 2\E/, 'and so does make giving up';
+
+  # The positive short-circuit make does have is on_empty, and that one is
+  # honest: it speaks only when nothing was left after stripping.
+  my ($quiet) = $c->compress('make', "make[1]: Entering directory '/x'\nmake[1]: Leaving directory '/x'\n", '');
+  is $quiet, 'make: ok', 'a build with nothing to report still says so';
+};
+
+subtest 'no parsed filter overshadows a more specific one' => sub {
+  # karr #30, the same bug class as #25 one level down. _match_filter stops
+  # at the first matching parsed filter ("last if parsed_command"), so when
+  # a { program => 'kubectl' } filter and a { program => 'kubectl',
+  # subcommand => 'get' } filter both match `kubectl get pods`, hash order
+  # picks the winner -- and hash order is per process.
+  #
+  # This is the tripwire, not a fix: the table has no such pair today
+  # because #17 deliberately did not build the bare kubectl/yarn/pnpm
+  # filters the reference promised. A specificity precedence in the
+  # selection would be a real behaviour change and nothing needs it yet.
+  my $c = MCP::Run::Compress->new;
+
+  # A matches every command B matches, and asks for strictly less. Mirrors
+  # _match_parsed_command: same program, subcommand only checked when the
+  # filter names one, every named flag has to be present.
+  my $overshadows = sub {
+    my ($a, $b) = @_;
+    return 0 if ($a->{program} // '') ne ($b->{program} // '');
+    return 0 if defined $a->{subcommand} && ($b->{subcommand} // '') ne $a->{subcommand};
+    for my $flag (keys %{$a->{flags} // {}}) {
+      return 0 unless $b->{flags}{$flag};
+    }
+    my $criteria = sub {
+      my ($spec) = @_;
+      return (defined $spec->{subcommand} ? 1 : 0) + scalar keys %{$spec->{flags} // {}};
+    };
+    return $criteria->($a) < $criteria->($b);
+  };
+
+  my $shadow_pairs = sub {
+    my ($compressor) = @_;
+    my @keys = grep { $compressor->filters->{$_}{parsed_command} }
+      sort keys %{$compressor->filters};
+    my @pairs;
+    for my $a (@keys) {
+      for my $b (@keys) {
+        next if $a eq $b;
+        push @pairs, "$a swallows $b"
+          if $overshadows->($compressor->filters->{$a}{parsed_command},
+                            $compressor->filters->{$b}{parsed_command});
+      }
+    }
+    return @pairs;
+  };
+
+  my @pairs = $shadow_pairs->($c);
+  is scalar(@pairs), 0, 'every parsed filter is reachable past the ones before it'
+    or diag "the less specific one wins by hash order:\n" . join "\n", @pairs;
+
+  # Positive control on a throwaway compressor: without it the check above
+  # would still pass on an empty table and prove nothing. This is exactly
+  # the filter the reference asked for and #17 refused to build.
+  my $shadowed = MCP::Run::Compress->new;
+  $shadowed->register_filter(parsed_command => { program => 'kubectl' }, max_lines => 40);
+  is_deeply [sort $shadow_pairs->($shadowed)],
+    ['parsed:kubectl:: swallows parsed:kubectl:describe:',
+     'parsed:kubectl:: swallows parsed:kubectl:get:'],
+    'a bare { program => kubectl } filter is caught';
+
+  # And it really is ambiguous rather than merely untidy: both specs match
+  # the same command, so which one shapes the output is not decided here.
+  my $parsed = $shadowed->_parse_command('kubectl get pods -n prod');
+  ok $shadowed->_match_parsed_command({ program => 'kubectl' }, $parsed),
+    'the bare filter matches kubectl get pods';
+  ok $shadowed->_match_parsed_command({ program => 'kubectl', subcommand => 'get' }, $parsed),
+    'and so does the specific one';
+};
+
+subtest 'register_filter refuses configuration it would not act on' => sub {
+  # karr #28. `replace` was stored into every filter hash and read by no
+  # stage of the pipeline -- an attribute that looks usable and does
+  # nothing. Since #25 it was worse than inert: a filter setting only
+  # `replace` counts as non-shaping, is never selected, and then trips the
+  # "every filter shapes output or transforms the command" invariant. The
+  # author would get a test failure instead of an explanation.
+  #
+  # It is gone rather than implemented because it had no niche left:
+  # per-line rewriting is `transform`, whole-output replacement is
+  # `match_output`, dropping lines is `strip_lines_matching`. Removing the
+  # one dead attribute is only half the fix though -- silence is what made
+  # it survive this long, so unknown attributes are refused outright.
+  my $c = MCP::Run::Compress->new;
+
+  ok !exists $c->filters->{'^ls\b'}{replace}, 'no filter carries a replace key any more';
+
+  my $err = do {
+    local $@;
+    eval { $c->register_filter(command => '^probe-dead\b', replace => [[qr/a/, 'b']]) };
+    $@;
+  };
+  like $err, qr/replace/, 'the removed attribute names itself in the error';
+  ok !exists $c->filters->{'^probe-dead\b'}, 'and the filter is not registered';
+
+  # The general case, which is why this is a check and not a delete: a
+  # typo in an attribute name used to register a filter that quietly did
+  # something other than what was written.
+  my $typo = do {
+    local $@;
+    eval { $c->register_filter(command => '^probe-typo\b', max_line => 30) };
+    $@;
+  };
+  like $typo, qr/max_line\b/, 'a mistyped attribute is refused too';
+
+  # Everything the pipeline actually reads still goes through untouched.
+  $c->register_filter(
+    command              => '^probe-full\b',
+    strip_ansi           => 1,
+    strip_lines_matching => [qr(^\s*$)],
+    keep_lines_matching  => [qr(keep)],
+    truncate_lines_at    => 40,
+    max_lines            => 10,
+    tail_lines           => 2,
+    head_lines           => 3,
+    on_empty             => 'probe: ok',
+    match_output         => [{ pattern => qr(^done)m, message => 'probe: done' }],
+    filter_stderr        => 1,
+    output_detect        => qr(keep),
+    transform            => sub { $_[0] },
+    command_transform    => sub { $_[0] },
+  );
+  ok exists $c->filters->{'^probe-full\b'}, 'every attribute the pipeline reads is accepted';
+};
+
+subtest 'a strip list removes the noise, not the diagnosis' => sub {
+  # karr #32. The make filter stripped every `make[N]:` line to get rid of
+  # the Entering/Leaving chatter of a recursive build -- and took the
+  # sub-make failure line with it. That line is the only one naming the
+  # target that actually broke and the Makefile line it broke on; the
+  # top-level abort that survives always says `all`. On a tree with twenty
+  # subdirectories it is the answer to "where".
+  #
+  # These assertions name the property, not the pattern: whatever the
+  # strip list looks like, the failure has to come through and the
+  # recursion chatter must not.
+  my $c = MCP::Run::Compress->new;
+
+  my $failing = join '', map({ "make[1]: Entering directory '/src/mod$_'\n"
+      . "gcc -Wall -O2 -c -o mod$_.o mod$_.c\n"
+      . "make[1]: Leaving directory '/src/mod$_'\n" } 1 .. 6),
+    "make[1]: Entering directory '/src/parser'\n",
+    "gcc -Wall -O2 -c -o lexer.o lexer.c\n",
+    "lexer.c:142:9: error: expected ';' before '}'\n",
+    "make[1]: *** [Makefile:18: lexer.o] Error 1\n",
+    "make[1]: Leaving directory '/src/parser'\n",
+    "make: *** [Makefile:7: all] Error 2\n";
+
+  my ($out) = $c->compress('make', $failing, '');
+  note "OUTPUT: $out";
+
+  like $out, qr/\Q*** [Makefile:18: lexer.o] Error 1\E/,
+    'the sub-make line naming the failed target survives';
+  like $out, qr/lexer\.c:142:9: error: expected/,
+    'and the compiler diagnosis it belongs to';
+  like $out, qr/\Q*** [Makefile:7: all] Error 2\E/,
+    'and the top-level abort';
+  unlike $out, qr/Entering directory/, 'while the recursion chatter is gone';
+  unlike $out, qr/Leaving directory/, 'in both directions';
+
+  # The broad rule existed for a reason, and narrowing it must not cost
+  # that reason: a recursive build with nothing to do is pure chatter, and
+  # it still has to collapse to the one line that says so.
+  my $noop = join '', map { "make[1]: Entering directory '/src/mod$_'\n"
+      . ($_ % 2 ? "make[1]: 'all' is up to date.\n" : "make[1]: Nothing to be done for 'all'.\n")
+      . "make[1]: Leaving directory '/src/mod$_'\n" } 1 .. 20;
+  my ($quiet) = $c->compress('make', $noop, '');
+  is $quiet, 'make: ok', 'a no-op recursive build still collapses to one line';
+
+  # And the whole class, over the whole table (karr #32 second half). A
+  # strip list is the one stage that deletes lines by pattern rather than
+  # by count, so a pattern wider than its purpose removes the answer
+  # silently -- the make rule did exactly that for as long as it existed.
+  # Lines shaped like a diagnosis are therefore off limits to every strip
+  # list, and a filter that needs an exception has to argue for it here.
+  my @diagnosis = (
+    "error: expected ';' before '}'",
+    "error[E0308]: mismatched types",
+    "Error: cannot resolve host",
+    "ERROR: failed to solve: process \"/bin/sh -c make\" did not complete successfully",
+    "fatal: not a git repository (or any of the parent directories)",
+    "fatal: [web01]: FAILED! => {\"changed\": false, \"msg\": \"boom\"}",
+    "make[1]: *** [Makefile:18: lexer.o] Error 1",
+    "*** No rule to make target 'foo.o'.  Stop.",
+    "! Installing Broken::Dep failed. See build.log",
+    "npm ERR! code ERESOLVE",
+    "[ERROR] Failed to execute goal on project foo",
+    "FAILURE: Build failed with an exception.",
+    "FAILED tests/test_parser.py::test_scan - AssertionError: assert 1 == 2",
+    "Error from server (NotFound): pods \"web-7d4\" not found",
+    "web-7d4  0/1  CrashLoopBackOff  7  12m",
+    "curl: (7) Failed to connect to example.com port 443: Connection refused",
+    "undefined reference to `main'",
+    "cc1: all warnings being treated as errors",
+    "Segmentation fault (core dumped)",
+    "panic: runtime error: index out of range",
+    "Traceback (most recent call last):",
+    "warning: unused variable 'x'",
+    "No such file or directory",
+    "Permission denied",
+  );
+
+  # Empty on purpose. A filter that genuinely has to strip something
+  # diagnosis-shaped belongs here with a reason next to it, so the
+  # decision is written down rather than discovered later by a user whose
+  # error message went missing.
+  my %allowed_to_strip;
+
+  my @eaten;
+  for my $key (sort keys %{$c->filters}) {
+    next if $allowed_to_strip{$key};
+    for my $pattern (@{$c->filters->{$key}{strip_lines_matching} // []}) {
+      for my $line (@diagnosis) {
+        push @eaten, "$key: $pattern\n    eats: $line" if $line =~ $pattern;
+      }
+    }
+  }
+  is scalar(@eaten), 0, 'no strip list removes a line shaped like a diagnosis'
+    or diag join "\n", @eaten;
+
+  # The check is only worth its runtime if it is actually looking at the
+  # table -- 71 filters carry a strip list today.
+  my @stripping = grep { @{$c->filters->{$_}{strip_lines_matching} // []} } keys %{$c->filters};
+  cmp_ok scalar(@stripping), '>=', 60, 'and it looked at the whole table';
 };
 
 sub _show {

@@ -101,12 +101,32 @@ sub _parse_command {
   };
 }
 
+# Every attribute the pipeline reads, and nothing else -- register_filter
+# refuses anything not on this list (karr #28). `replace` used to be stored
+# here and read by no stage, which is not the harmless kind of dead code:
+# after #25 a filter setting only `replace` counted as non-shaping, was
+# never selected, and then tripped the "no dead configuration" invariant,
+# so its author got a test failure instead of an explanation. It is gone
+# rather than implemented because nothing was missing -- per-line rewriting
+# is `transform`, whole-output replacement is `match_output`, dropping
+# lines is `strip_lines_matching`. Refusing unknown names rather than only
+# deleting the one attribute is the actual fix: silence is what let it sit
+# here unnoticed, and the next typo would have sat here just as quietly.
+my %FILTER_ATTRIBUTE = map { $_ => 1 } qw(
+  strip_ansi strip_lines_matching keep_lines_matching truncate_lines_at
+  max_lines tail_lines head_lines on_empty match_output filter_stderr
+  output_detect transform command_transform
+);
+
 sub register_filter {
   my $self = shift;
   my %args = @_;
 
   my $command = delete $args{command};
   my $parsed_command = delete $args{parsed_command};
+
+  my @unknown = sort grep { !$FILTER_ATTRIBUTE{$_} } keys %args;
+  die "register_filter: unknown filter attribute(s): @unknown\n" if @unknown;
 
   # Determine storage key: parsed commands use a special key format
   my $key;
@@ -131,7 +151,6 @@ sub register_filter {
     tail_lines          => $args{tail_lines}           // 0,
     head_lines          => $args{head_lines}           // 0,
     on_empty            => $args{on_empty}            // '',
-    replace             => $args{replace}             // [],
     match_output        => $args{match_output}         // [],
     filter_stderr       => $args{filter_stderr}       // 0,
     output_detect       => $args{output_detect}       // undef,
@@ -301,16 +320,52 @@ sub _build_default_filters {
     command => '^make\b',
     strip_lines_matching => [
       qr(^\s*$),
-      qr(^make\[\d+\]:),
+      # Only the chatter, not every sub-make line (karr #32). This used to
+      # be a bare qr(^make\[\d+\]:), which did suppress the Entering/
+      # Leaving pair a recursive build prints per directory -- and also
+      # `make[1]: *** [Makefile:18: lexer.o] Error 1`, the only line that
+      # names the target that actually broke and the Makefile line it
+      # broke on. What survived was the top-level abort, and that one
+      # always says `all`. On a tree with twenty subdirectories the answer
+      # to "where" was being stripped out of every failed build.
+      #
+      # Narrowing lets the rest of make's vocabulary through, which is
+      # what we want: *** Error N, *** No rule to make target, Target not
+      # remade because of errors, Circular ... dependency dropped (the
+      # warning the removed short-circuit of #29 was meant to report),
+      # and the jobserver warnings. All of them are one-off and all of
+      # them say something.
+      qr(^make\[\d+\]:\s+(?:Entering|Leaving) directory),
+      # The one line of real volume the narrowing would otherwise let
+      # back in: a no-op recursive build prints this once per directory,
+      # and without it twenty subdirectories cost twenty lines instead of
+      # the single `make: ok` that on_empty gives below.
+      qr(^make\[\d+\]:\s+.*is up to date\.\s*$),
       qr(^Entering directory),
       qr(^Leaving directory),
       qr(Nothing to be done),
       qr(^make:\s+Nothing to be done),
     ],
-    match_output => [
-      { pattern => qr(^make\[\d+\]:.*?make\[\d+\]:), message => 'make: circular dependency detected' },
-      { pattern => qr(^gcc.*?Error), message => 'make: compilation error' },
-    ],
+    # Two match_output short-circuits removed here (karr #29), and adding
+    # the missing /m would not have rescued either of them.
+    #
+    # `^make\[\d+\]:.*?make\[\d+\]:` -> "circular dependency detected"
+    # never looked for the word Circular; it wanted two `make[N]:` on ONE
+    # line, because `.` does not cross newlines without /s. Real circular
+    # output is `make[1]: Circular a <- b dependency dropped.` -- one per
+    # line, so /m changes nothing. And it is a warning: make carries on,
+    # so replacing the whole build with that one note would hide how the
+    # build actually ended.
+    #
+    # `^gcc.*?Error` -> "compilation error" wants a line starting with gcc
+    # that also carries "Error". gcc writes `lexer.c:142:9: error:` --
+    # lowercase, and starting with the file. The echoed `gcc -c ...` line
+    # has no Error on it. So /m does not make it fire either, and if it
+    # ever did it would delete the compiler diagnosis, which is the entire
+    # reason someone reads a failed build.
+    #
+    # The honest short-circuit for make is on_empty below: it speaks only
+    # when the strip list left nothing, i.e. when there is nothing to say.
     max_lines => 50,
     on_empty => 'make: ok',
   );
@@ -570,9 +625,14 @@ sub _build_default_filters {
       qr(^Configuring),
       qr(^Building and testing),
     ],
-    match_output => [
-      { pattern => qr{^\s*Successfully installed}, message => 'cpanm: ok' },
-    ],
+    # No match_output short-circuit to "cpanm: ok" (karr #29). It was
+    # written without /m, so its `^` anchored on the whole output and it
+    # never fired -- but /m is not the fix. The first realistic run it
+    # would fire on is `cpanm --installdeps .` where one distribution
+    # failed: cpanm prints "Successfully installed A" and then
+    # "! Installing B failed", and collapsing that to "cpanm: ok" reports
+    # a broken install as a clean one. The strip list above already leaves
+    # exactly the result lines -- naming the version, and the failure.
     max_lines => 30,
   );
 
@@ -1753,12 +1813,28 @@ sub _pipeline {
       $out = (join("\n", @lines[0..$head-1])) . "\n... $omit lines omitted ...\n" . (join("\n", @lines[-$tail..-1]));
     }
     elsif ($omit > 0) {
-      $out = join("\n", @lines[0..min($head, scalar @lines)-1]);
+      # Marker after the kept lines -- here it is the end that is missing.
+      # Trailing is the exposed end: stage 9 keeps the FIRST max_lines
+      # lines, so this marker survives only while max_lines > head_lines.
+      # t/compress.t guards that config instead of teaching stage 9 to
+      # recognise markers.
+      $out = (join("\n", @lines[0..$head-1])) . "\n... $omit lines omitted ...";
     }
   }
   elsif ($matched_filter->{tail_lines} > 0) {
+    # Was the one branch that cut without saying so, on the assumption
+    # that no filter reaches it -- until `shopify theme push` did, and
+    # started handing the model its last five lines as if they were the
+    # whole output (karr #31).
     my @lines = split(/\n/, $out);
-    $out = join("\n", @lines[-min($matched_filter->{tail_lines}, scalar @lines)..-1]);
+    my $tail = min($matched_filter->{tail_lines}, scalar @lines);
+    my $omit = @lines - $tail;
+    # Marker before the kept lines -- it is the beginning that is missing,
+    # and leading is also the durable end: stage 9 cuts from the back, so
+    # neither the marker nor the count it carries can be invalidated by
+    # whatever max_lines does to the tail below.
+    $out = ($omit > 0 ? "... $omit lines omitted ...\n" : '')
+      . join("\n", @lines[-$tail..-1]);
   }
 
   # Stage 9: Max lines

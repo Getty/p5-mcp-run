@@ -436,47 +436,64 @@ nothing but its answer, and a tail of 5 would cut it.
 
 =head1 FILTER STAGES
 
-Each filter applies output through this pipeline:
+Each filter applies output through this pipeline, in this order:
 
 =over 4
 
 =item 1.
 
-B<strip_ansi> - Removes ANSI escape codes (colors, cursor control)
+B<filter_stderr> - Merges stderr into stdout if configured
 
 =item 2.
 
-B<filter_stderr> - Merges stderr into stdout if configured
+B<strip_ansi> - Removes ANSI escape codes (colors, cursor control)
 
 =item 3.
 
-B<match_output> - Short-circuits on pattern match (e.g., success messages)
+B<collapse_cr> - Reduces carriage-return overwrites to the last state on each
+line, which is what a terminal would have shown. Unconditional, with no filter
+attribute: a progress bar carries no newlines at all, so to every stage below it
+is a single line that C<max_lines> cannot shorten. Runs for commands no filter
+matches, too: normalising C<\r> is display semantics rather than filtering.
 
 =item 4.
 
-B<transform> - Line-by-line transformation (e.g., strip ls permissions)
+B<match_output> - Short-circuits on pattern match, replacing the B<entire>
+output with a fixed message. Only ever honest for success, when there is
+nothing left to say: a diagnostic short-circuit deletes precisely what the
+output was being read for. Patterns want C</m>, since they are matched against
+the whole text rather than line by line.
 
 =item 5.
 
-B<strip_lines_matching> - Removes lines matching regex patterns
+B<transform> - Line-by-line transformation (e.g., strip ls permissions)
 
 =item 6.
 
-B<keep_lines_matching> - Keeps only lines matching patterns
+B<strip_lines_matching> - Removes lines matching regex patterns
 
 =item 7.
 
-B<truncate_lines_at> - Truncates each line to N characters
+B<keep_lines_matching> - Keeps only lines matching patterns
 
 =item 8.
 
-B<head_lines> / B<tail_lines> - Keeps first/last N lines
+B<truncate_lines_at> - Truncates each line to N characters, appending C<...>
 
 =item 9.
 
-B<max_lines> - Absolute line limit
+B<head_lines> / B<tail_lines> - Keeps first/last N lines, and says so:
+C<... N lines omitted ...> goes after the kept lines when only the head is
+kept, and before them when only the tail is kept. Truncating without a marker
+would leave the model holding a fragment it has no reason to doubt.
 
 =item 10.
+
+B<max_lines> - Absolute line limit, appending C<... N more lines ...>. This
+counts separately from the marker above: two markers in one output are normal
+and their numbers do not add up to a single total.
+
+=item 11.
 
 B<on_empty> - Fallback message when output is empty after filtering
 

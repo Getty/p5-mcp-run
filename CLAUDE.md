@@ -119,7 +119,7 @@ hardcodierte 1800s-Timeout und das Docker-Pipe-Snippet.
 - Erbt `format_result()` von `MCP::Run`
 
 **MCP::Run::Compress** (lib/MCP/Run/Compress.pm):
-- 11-Stage Filter-Pipeline: strip_ansi, collapse_cr, filter_stderr, match_output, transform, strip_lines, keep_lines, truncate, head/tail, max_lines, on_empty
+- 11-Stage Filter-Pipeline: filter_stderr, strip_ansi, collapse_cr, match_output, transform, strip_lines, keep_lines, truncate, head/tail, max_lines, on_empty
 - `collapse_cr` läuft unkonditional, nicht per Filter-Attribut: es reduziert je
   Zeile die `\r`-getrennten Segmente auf das letzte nicht-leere, bildet also ab,
   was im Terminal steht. Ohne die Stufe gingen Fortschrittsbalken (cargo, npm,
