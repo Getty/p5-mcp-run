@@ -1,0 +1,49 @@
+---
+claimed_at: 2026-08-15T08:20:40Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T08:20:40Z
+created: 2026-08-15T06:01:47Z
+id: 18
+priority: low
+started: 2026-08-15T07:44:07Z
+status: done
+title: 'Co-Authored-By: Erkennung case-insensitiv, Ersetzung case-sensitiv'
+updated: 2026-08-15T08:20:40Z
+---
+
+Gefunden von einem Worker bei #13, von mir nachgeprueft (Session 0a4d56b3,
+2026-08-15). lib/MCP/Run/Compress.pm, command_transform des git-commit-Filters.
+
+Die Erkennung ist case-insensitiv:
+
+  if ($cmd =~ /Co-Authored-By:/i) {
+
+die Ersetzung im selben Zweig nicht:
+
+  $cmd =~ s/Co-Authored-By: [^\n"]+/Co-Authored-By: $model/g;
+
+Schreibt jemand den Trailer klein oder gross, wird der Ersetzungszweig betreten,
+ersetzt nichts, und weil der Zweig mit return endet, unterbleibt auch die
+Injektion. Ergebnis: gar kein Trailer. Gemessen mit CO_AUTHORED_BY=claude-opus-5:
+
+  ...Co-Authored-By: alt <a@b.de>   -> Trailer gesetzt
+  ...co-authored-by: alt <a@b.de>   -> KEIN Trailer
+  ...CO-AUTHORED-BY: alt <a@b.de>   -> KEIN Trailer
+  ...ohne Trailer                   -> Trailer gesetzt
+
+Der Fall ist realistisch: git-Trailer werden von Menschen haeufig klein
+geschrieben, und git selbst behandelt Trailer-Keys nicht streng
+gross-klein-sensitiv.
+
+Fix: die beiden Schreibweisen angleichen. Naheliegend ist /i auch an der
+Ersetzung; dann sollte aber bewusst entschieden werden, ob die vorhandene
+Schreibweise erhalten bleibt oder auf die kanonische Form normalisiert wird.
+
+Hinweis fuer die Umsetzung: seit #13 laeuft der Wert vorher durch die
+Positivliste in _co_authored_by(). Dieser Fund ist davon unabhaengig -- er
+betrifft die Erkennung des VORHANDENEN Trailers im Command, nicht den
+einzusetzenden Wert.
+REVIEW ABGENOMMEN 2026-08-15 (main). Alle drei Schreibweisen live geprueft:
+Co-Authored-By / co-authored-by / CO-AUTHORED-BY setzen jetzt saemtlich den
+Trailer. Vorher trugen die letzten beiden gar keinen.
