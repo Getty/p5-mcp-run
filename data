@@ -1,0 +1,78 @@
+---
+class: standard
+created: 2026-08-15T07:49:17Z
+id: 24
+priority: medium
+status: backlog
+title: PostToolUse komprimiert fehlgeschlagene Commands nicht
+updated: 2026-08-15T19:47:48Z
+---
+
+Bekannte, bewusst in Kauf genommene Grenze des Umbaus aus #9. Gemessen
+Session 0a4d56b3 bzw. 325827e5, 2026-08-15.
+
+Bei Exit != 0 feuert nicht PostToolUse, sondern PostToolUseFailure. Verifiziert:
+ein Command mit 'exit 3' bekam keinen Sonden-Header, ein identischer mit
+'exit 0' schon. Im Failure-Payload gibt es kein tool_response, nur einen
+error-String und is_interrupt, und updatedToolOutput wird ignoriert -- in #9
+in vier Varianten durchgetestet. Durch kommt nur additionalContext, und das
+ERSETZT nichts, spart also keinen einzigen Token.
+
+Folge: seit dem Umbau bleibt die Ausgabe fehlgeschlagener Commands
+unkomprimiert. Das ist ein Rueckschritt gegenueber dem PreToolUse-Rewrite, der
+sie mitkomprimierte, weil er innerhalb der Ausfuehrung arbeitete. Und es trifft
+ausgerechnet den lautesten Fall: ein fehlgeschlagener Build, eine rote
+Testsuite, ein Compiler mit hundert Warnungen.
+
+Warum trotzdem so entschieden: der Umbau gewinnt an jeder anderen Stelle
+(kein Eingriff in die Command, kein 1800s-Timeout, keine Temp-Dateien, im
+Docker-Modus faellt das ganze Host-Snippet samt der Fehlerklasse aus #11 weg).
+Der Maintainer hat den Umbau ausdruecklich beauftragt, in Kenntnis dieser
+Grenze.
+
+Was fehlt, ist ein Weg zurueck fuer den Fehlerfall. Keine der bisher geprueften
+Formen traegt. Denkbare Richtungen, keine davon geprueft:
+ - Ein Weg, PostToolUse auch bei Exit != 0 auszuloesen (Harness-seitig, nicht in
+   unserer Hand -- waere eine Anfrage an Claude Code).
+ - Ein sehr schlanker PreToolUse-Rewrite, der NUR bei Commands greift, deren
+   Fehlschlag wahrscheinlich und deren Ausgabe erfahrungsgemaess laut ist
+   (make, cargo, prove, npm test). Zwei Compressionswege gleichzeitig sind
+   aber genau die Vermengung, die die Hausregeln verbieten -- das braeuchte
+   eine sehr gute Begruendung.
+ - Akzeptieren und dokumentieren. Aktueller Stand.
+
+Nicht anfassen, solange #9 nicht steht.
+Nachtrag 2026-08-15, Session 51a6d83e: Richtung 2 ist geprueft und tot.
+
+Der Spike unter ~/.claude/spike-mcp-run/permcheck (Lauf 2, V2 ohne base64)
+misst, ob Claude Code seine deny-Regeln VOR oder NACH dem PreToolUse-Rewrite
+prueft. Aufbau: deny-Regel liegt auf spike-perm-target, der Hook schreibt um
+auf spike-perm-allowed, das nicht gesperrt ist.
+
+  A  spike-perm-target control   unveraendert  -> GEBLOCKT    (Regel greift)
+  B  spike-perm-allowed sanity   unveraendert  -> lief durch  (Ziel erreichbar)
+  C  spike-perm-target rewrite   umgeschrieben -> LIEF DURCH
+
+Wortlaut A: "Permission to use Bash with command spike-perm-target control has
+been denied." Das ist die regulaere Permission-Ablehnung mit Kommandotext,
+nicht das "Blocked by classifier" aus Lauf 1 -- die deny-Regel wurde also
+tatsaechlich ausgewertet. Heartbeat: Hook lief, permission_mode=default
+(check.sh nimmt manual|default als den klassischen Regel-Modus). Das Rewrite
+ist im Log belegt: seq=2, spike-perm-target rewrite -> spike-perm-allowed
+rewrite. Fall B, der in Lauf 1 fehlte, schliesst aus, dass C an einem kaputten
+oder ebenfalls gesperrten Ziel scheitert.
+
+ERGEBNIS: Die Regeln sehen das REWRITE, nicht das Original. Ein
+PreToolUse-Rewrite haengt jede deny-Regel des Nutzers aus.
+
+Damit faellt Richtung 2 nicht an der Hausregel gegen zwei parallele
+Compressionswege, sondern an etwas Schwererem: der Hook wuerde die
+Permission-Schicht nicht umgehen, sondern fuer jeden umgeschriebenen Command
+aufheben. Fuer ein oeffentliches Produkt disqualifiziert, und zwar unabhaengig
+davon, wie schmal man den Rewrite zuschneidet -- auch einer, der nur bei
+make/cargo/prove/npm test greift, greift dort eben permission-aushebelnd. Das
+ist kein Begruendungsproblem mehr, sondern ein Ausschlusskriterium.
+
+Bleiben Richtung 1 (Harness-seitig, waere eine Anfrage an Claude Code) und
+Richtung 3 (akzeptieren und dokumentieren, aktueller Stand). Der Spike wird
+nach dieser Messung zurueckgebaut (uninstall.sh).
