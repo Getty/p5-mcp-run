@@ -1,0 +1,108 @@
+---
+claimed_at: 2026-08-15T08:31:37Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T08:20:18Z
+created: 2026-08-15T05:51:00Z
+id: 13
+priority: high
+started: 2026-08-15T05:52:18Z
+status: done
+title: CO_AUTHORED_BY/ANTHROPIC_MODEL wird ungeprueft in eine Shell-Zeichenkette injiziert
+updated: 2026-08-15T08:31:37Z
+---
+
+Reproduziert Session 0a4d56b3, 2026-08-15. lib/MCP/Run/Compress.pm, der
+command_transform des git-commit-Filters (Zeilen 843-883).
+
+$model kommt aus $ENV{CO_AUTHORED_BY} || $ENV{ANTHROPIC_MODEL} und wird an zwei
+Stellen ungeprueft in den Command gespleisst:
+
+  Zeile 851 (Ersetzung):  s/Co-Authored-By: [^\n"]+/Co-Authored-By: $model/g
+  Zeile 878 (Injektion):  substr(...) = "\n\nCo-Authored-By: $model"
+
+Die Injektion landet INNERHALB der doppelten Anfuehrungszeichen des
+-m-Arguments. Enthaelt $model ein Anfuehrungszeichen, schliesst es die
+Zeichenkette und alles Weitere wird zu eigenstaendigen Shell-Befehlen. Enthaelt
+es $(...) oder Backticks, greift Command Substitution, ohne dass ueberhaupt ein
+Anfuehrungszeichen noetig waere.
+
+Nachgewiesen (nicht nur die Zeichenkette geprueft, sondern mit einem git-Stub im
+PATH ausgefuehrt):
+
+  CO_AUTHORED_BY='boese" ; echo >&2 "### FREMDER BEFEHL LIEF ###" ; echo "'
+  Eingabe:   git commit -m "harmlos"
+  Ergebnis:  git commit -m "harmlos\n\nCo-Authored-By: boese" ; echo >&2 "### FREMDER BEFEHL LIEF ###" ; echo ""
+  Ausfuehrung: [git-stub aufgerufen mit 3 Argumenten]
+               ### FREMDER BEFEHL LIEF ###
+
+Die Anfuehrungszeichen bleiben dabei paarig, die Zeile ist also syntaktisch
+gueltiges bash -- es faellt nicht als Fehler auf, es laeuft einfach zusaetzlich.
+Ebenso greift 'mit $(echo Substitution)'.
+
+EINORDNUNG, ehrlich: das ist kein Remote-Loch. Beide Variablen setzt der Nutzer
+bzw. der Harness, ein Angreifer von aussen erreicht sie im Normalfall nicht.
+Der Defekt ist trotzdem real: eine Variable, die als reiner ERSATZTEXT
+dokumentiert ist ("Replacement fuer Co-Authored-By", CLAUDE.md), wird
+stillschweigend zu ausfuehrbarer Shell. Ein Tippfehler mit einem
+Anfuehrungszeichen oder ein Wert aus einer CI-Konfiguration reicht. Und der
+betroffene Codepfad schreibt echte git-Commits um.
+
+Fix: $model validieren oder neutralisieren, bevor es gespleisst wird. Naheliegend
+ist eine enge Positivliste fuer das, was ein Co-Authored-By-Trailer sein darf
+(Name plus <mail>), und Ablehnung -- also unveraenderter Command -- bei allem
+anderen. Mindestens muessen ", \, $, Backtick und Zeilenumbruch ausgeschlossen
+sein. Stilles Escapen waere schlechter als Ablehnen: ein verstuemmelter Trailer
+im Commit faellt niemandem auf.
+
+Beide Pfade absichern, nicht nur die Injektion -- die Ersetzung in Zeile 851 hat
+dasselbe Problem.
+
+NEBENBEFUND, latent und heute harmlos: transform_command (Zeile 1204) laeuft
+ueber 'keys %{$self->filters}' und bricht nach dem ersten Treffer mit
+command_transform ab ('last'). Die Schluesselreihenfolge eines Perl-Hashes ist
+pro Prozess zufaellig. Heute existiert genau ein Filter mit command_transform,
+deshalb faellt es nicht auf. Kommt ein zweiter dazu, ist es Zufall, welcher
+greift. Entweder deterministisch sortieren oder eine explizite Prioritaet
+einfuehren -- am besten jetzt, solange es folgenlos ist.
+
+ABGESCHLOSSEN 2026-08-15. Validierung statt Escaping umgesetzt
+(_co_authored_by() mit Positivliste, beide Pfade gedeckt), Ausfuehrungsbeweis
+mit git-Stub im Test, Rot-Phase isoliert nachgewiesen. transform_command
+iteriert jetzt sortiert.
+
+NACHGEPRUEFT UND ENTWARNUNG zu einem Folgehinweis des Workers: die beiden
+weiteren 'keys %{$self->filters}'-Schleifen in compress() sind NICHT
+nichtdeterministisch. Direkt darunter steht eine explizite Vorrangregel samt
+Begruendung -- parsed_command-Filter schlagen Legacy-Regex-Filter, genau um die
+Hash-Reihenfolge auszuschalten. Gemessen: von 48 realistischen Commands matcht
+nur 'git diff --stat' zwei Filter, und zwar einen je Art, also deterministisch
+aufgeloest. Die beiden liefern tatsaechlich Unterschiedliches (1244 vs 1190
+Zeichen), die Regel entscheidet also wirklich etwas. Kollisionen ZWEIER Filter
+derselben Art: null. 20 separate Prozesse liefern byte-identisches Ergebnis.
+
+Dort also NICHT sortieren -- das waere keine Determinismus-Korrektur, sondern
+eine echte Verhaltensaenderung an der Filterauswahl.
+
+KORREKTUR 2026-08-15 zu der oben stehenden "ENTWARNUNG": sie war FALSCH.
+
+Ich hatte behauptet, die Filterauswahl in compress() sei nicht
+hash-order-abhaengig, gestuetzt auf einen Sweep ueber 48 Commands ohne eine
+einzige Kollision gleicher Art. Der Sweep enthielt ausschliesslich einfache
+Commands. Genau die Form, die kollidiert -- zusammengesetzte Commands -- war
+nicht dabei. Der Fehler lag in der Stichprobe, nicht in der Messung.
+
+  cat msg.txt && git commit -m "fix"
+
+kollidiert, weil der git-commit-Filter als einziger nicht auf ^ verankert ist.
+12 Prozesse mit verschiedenen PERL_HASH_SEED: 9 mal kein Trailer, 3 mal
+Trailer.
+
+Der Befund ist als #25 erfasst, samt der tieferen Ursache: der
+git-commit-Filter hat gar kein ausgabeformendes Attribut und gehoert deshalb
+nicht in die Auswahl des Ausgabefilters. Die Aussage "dort NICHT sortieren"
+bleibt richtig -- sort waere nur deterministisch falsch statt zufaellig falsch.
+Falsch war die Behauptung, es gebe nichts zu tun.
+REVIEW ABGENOMMEN 2026-08-15 (main). Injektion live gegengeprueft:
+CO_AUTHORED_BY='boese" ; echo FREMDER-BEFEHL ; echo "' laesst den Command
+unveraendert ('git commit -m "harmlos"'), kein fremder Befehl im Ergebnis.
