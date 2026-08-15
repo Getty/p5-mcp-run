@@ -1,0 +1,53 @@
+---
+claimed_at: 2026-08-15T09:07:44Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T09:07:44Z
+created: 2026-08-15T08:53:33Z
+id: 32
+priority: medium
+started: 2026-08-15T08:59:30Z
+status: done
+title: make strip list frisst die Zeile, die den fehlgeschlagenen Target nennt
+updated: 2026-08-15T09:07:44Z
+---
+
+Gefunden bei #29 (2026-08-15), lib/MCP/Run/Compress.pm, make-Filter.
+
+Die strip_lines_matching-Liste des make-Filters enthaelt qr(^make\[\d+\]:).
+Das ist als Entfernung der Entering/Leaving-Chatter gedacht, trifft aber
+JEDE Zeile eines Sub-make -- auch die Fehlerzeilen.
+
+Gemessen:
+
+  Eingabe:
+    make[1]: Entering directory '/x/src'
+    lexer.c:9:1: error: boom
+    make[1]: *** [Makefile:18: lexer.o] Error 1
+    make[1]: Leaving directory '/x/src'
+    make: *** [Makefile:7: all] Error 2
+
+  Ausgabe:
+    lexer.c:9:1: error: boom
+    make: *** [Makefile:7: all] Error 2
+
+Die Zeile 'make[1]: *** [Makefile:18: lexer.o] Error 1' faellt weg. Sie ist
+die einzige, die den konkret fehlgeschlagenen Target (lexer.o) und das
+Makefile mit Zeilennummer nennt. Uebrig bleibt nur der Top-Level-Abbruch,
+der immer 'all' sagt.
+
+Kein Datenverlust in dem Sinn, dass der Fehlschlag unsichtbar wuerde -- die
+gcc-Diagnose und der Top-Level-Abbruch stehen noch da. Aber bei einem
+rekursiven Build mit mehreren Unterverzeichnissen ist genau diese Zeile die
+Antwort auf 'wo'.
+
+Ebenso verschwindet die Warnung 'make[1]: Circular a <- b dependency
+dropped.' vollstaendig -- der Kurzschluss, der sie melden sollte, ist bei
+#29 entfernt worden (er hat nie gefeuert und war als Ganzausgabe-Ersatz
+falsch konzipiert), aber die Warnung selbst wird jetzt auch nicht mehr
+durchgereicht.
+
+Vorschlag: die Strip-Regel praeziser fassen, z.B.
+qr(^make\[\d+\]:\s+(?:Entering|Leaving) directory) statt qr(^make\[\d+\]:),
+damit *** Error und Circular durchkommen. Vorher pruefen, was sonst noch an
+make[N]:-Zeilen anfaellt und heute bewusst weggefiltert wird.
