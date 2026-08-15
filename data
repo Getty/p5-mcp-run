@@ -1,0 +1,148 @@
+---
+claimed_at: 2026-08-15T08:30:42Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T08:26:12Z
+created: 2026-08-15T02:39:47Z
+id: 9
+priority: medium
+started: 2026-08-15T07:48:32Z
+status: done
+title: PostToolUse-Hook als Compression-Punkt statt PreToolUse-Rewrite
+updated: 2026-08-15T08:30:42Z
+---
+
+Spike-Ergebnis (Session 9603cb72, Sonde in scratchpad/spike/probe.pl, Dumps
+dort unter dumps/in-*.json -- beides in /tmp und damit verganglich).
+
+Frage: kann mcp-run-compress die Compression in einem PostToolUse-Hook machen,
+statt die Bash-Command auf `mcp-run-compress --b64 ...` umzuschreiben?
+
+Antwort: ja, und der Weg ist dem PreToolUse-Rewrite ueberlegen -- kein Eingriff
+in die Command, greift bei jedem Bash-Aufruf.
+
+Gemessene Mechanik (Claude Code, Bash-Tool):
+
+- hookSpecificOutput.updatedToolOutput ersetzt die Ausgabe. hookEventName muss
+  zum echten Event passen, sonst faellt die ganze Antwort still unter den Tisch.
+- tool_response.stderr traegt keinen Command-Output; stdout enthaelt beide
+  Streams zusammengefuehrt. (Das Feld kann Harness-Meldungen tragen, etwa
+  "Shell cwd was reset".)
+- tool_response.stdout ist hart bei 30000 Bytes gekappt.
+- Bei grosser Ausgabe kommen persistedOutputPath + persistedOutputSize dazu.
+  Die Datei ist zur Hook-Laufzeit lesbar und vollstaendig (108906 Bytes
+  verifiziert) -- damit ist der 30-KB-Deckel umgehbar. Sie enthaelt das rohe
+  Original; der Rewrite erreicht sie nie.
+- Die <persisted-output>-Rahmung samt 2-KB-Preview-Kappung haengt an genau
+  diesen beiden Feldern: loescht der Hook sie aus updatedToolOutput,
+  verschwindet die Rahmung und die komplette ersetzte Ausgabe kommt an
+  (5,4 KB ungekuerzt verifiziert). Behaelt man sie und korrigiert nur
+  persistedOutputSize, bleibt der Zeiger aufs Rohfile erhalten, der Body wird
+  aber bei 2 KB gekappt.
+
+Rezept: persisted-Datei lesen -> komprimieren -> updatedToolOutput.stdout
+setzen -> persistedOutputPath/persistedOutputSize loeschen.
+Offene Design-Frage: dabei geht der Pfad zum Rohfile verloren, gehoert also in
+den komprimierten Text hinein.
+
+PostToolUseFailure (Exit != 0) kann das NICHT:
+- Payload hat kein tool_response, nur error (String) und is_interrupt.
+- updatedToolOutput wird ignoriert -- vier Formen getestet.
+- Es kommt nur additionalContext durch (sauber) oder exit 2 + stderr
+  (verrauscht: Hook-Pfad steht zweimal im Text).
+- Fehlgeschlagene Commands lassen sich also annotieren, nicht komprimieren.
+
+--- Nachmessung Session 0a4d56b3 (2026-08-15) ---
+
+Vier neue Befunde, davon einer korrigiert die obige Notiz:
+
+1. KORREKTUR zum 30-KB-Deckel. Die Aussage "loescht der Hook
+   persistedOutputPath/Size, kommt die komplette ersetzte Ausgabe an" gilt nur
+   unterhalb des Caps. Sie war bei 5,4 KB verifiziert. Bei 31000 Bytes legt der
+   Harness fuer die ERSETZTE Ausgabe eine neue tool-results-Datei an und liefert
+   wieder <persisted-output> + 2-KB-Preview. Die Datei ist byte-exakt (31000 von
+   31000, keine Fremdbytes) -- es geht nichts verloren, aber das Modell sieht
+   nur 2 KB. Konsequenz fuer die Implementierung: komprimierter Output MUSS
+   unter dem Cap bleiben, sonst ist das Ergebnis schlechter als ohne
+   Compression. Ein Compressor, der 100 KB auf 40 KB bringt, liefert dem Modell
+   2 KB.
+
+2. Background-Commands lassen sich nicht komprimieren. Der Hook feuert, aber
+   beim START: tool_response traegt backgroundTaskId und noOutputExpected,
+   stdout/stderr sind leer. Die echte Ausgabe geht spaeter out-of-band ueber die
+   Task-Datei und ist kein Bash-Tool-Response mehr. Eine PostToolUse-Variante
+   muss auf backgroundTaskId bzw. noOutputExpected pruefen und durchreichen --
+   sonst klebt sie einen Header an die "Command running in background"-Meldung.
+   Deckt sich mit dem bestehenden Background-Bypass im PreToolUse-Rewrite.
+
+3. PostToolUse-Hooks verketten sich NICHT. Bei zwei registrierten Hooks bekommt
+   der zweite das ORIGINAL-tool_response zu sehen, nicht das updatedToolOutput
+   des ersten (verifiziert: len=24, kein Header des ersten Hooks). Geben beide
+   ein updatedToolOutput zurueck, gewinnt der zuletzt registrierte; die Arbeit
+   des anderen wird lautlos verworfen. Reihenfolge getauscht und gegengeprueft,
+   in beide Richtungen bestaetigt. Das ist ein echtes Produktrisiko: ein
+   beliebiger fremder PostToolUse-Hook auf Bash kann die Compression still
+   abschalten, ohne Fehlermeldung. Der PreToolUse-Rewrite hat dieses Problem
+   nicht in dieser Form.
+
+4. Fehlt das Hook-Skript, blockiert JEDER Bash-Aufruf mit
+   "PostToolUse:Bash hook blocking error". Ein Hook darf also nie auf einen
+   verganglichen Pfad zeigen (siehe Sicherheitsnotiz unten).
+
+Offen und nur vom Menschen zu beantworten: sieht der NUTZER im Terminal das
+Original oder die Ersetzung? Fuer das Produkt waere ideal: Nutzer sieht alles,
+Modell sieht komprimiert.
+
+--- Sicherheit der Sonde ---
+
+Die Sonde hing als globaler Hook in ~/.claude/settings.json und kuerzte jede
+Bash-Ausgabe > 5000 Bytes auf 240 Bytes -- in JEDER Session auf der Maschine.
+Auswertung der 1040 aufgezeichneten Payloads: 12 Sessions, 7 Projekte, nur 17 %
+davon p5-mcp-run; 35 Ausgaben wurden destruktiv gekuerzt, ueberwiegend in
+fremden Projekten (dbio, langertha, p5-git-libgit2, ...). Behoben:
+
+- Sonde kuerzt nicht mehr, stirbt nicht mehr (alles in eval, Fehler => stiller
+  Passthrough), Dumps gedeckelt, Zaehler ueber flock statt O(n)-glob.
+- Scope-Gate: nur session_ids aus sessions.txt werden angefasst. Datei fehlt
+  oder leer => niemand im Scope. Gegen alle 1069 fremden Payloads getestet:
+  null Veraenderung.
+- Hook raus aus ~/.claude/settings.json, rein in
+  .claude/settings.local.json (gitignoriert).
+- Code liegt jetzt unter ~/.claude/spike-mcp-run/ statt im /tmp-Scratchpad
+  einer toten Session.
+
+MESSUNG 2026-08-15 (Session 0a4d56b3), entscheidend fuer den Umbau:
+
+PostToolUse sieht die von PreToolUse UMGESCHRIEBENE Command, nicht das
+Original des Nutzers. Gemessen mit einer PreToolUse-Sonde, die
+"UMGESCHRIEBEN-VON-PRE" durch "UMGESCHRIEBEN-VON-PRE" ersetzt: im
+PostToolUse-Payload stand tool_input.command mit "UMGESCHRIEBEN-VON-PRE".
+tool_input traegt in diesem Fall nur den Key 'command'.
+
+Folge fuer den no-compress-Bypass: Wenn PreToolUse das Praefix wie bisher
+entfernt, kann PostToolUse den Wunsch nicht mehr erkennen -- das Praefix ist
+weg, bevor der komprimierende Hook ueberhaupt laeuft. Der Bypass muss also
+ueber eine Markierung laufen, die PreToolUse in der Command hinterlaesst und
+die fuer bash bedeutungslos ist.
+
+Vorschlag: PreToolUse ersetzt "no-compress <cmd>" durch "<cmd>" plus einer
+angehaengten Kommentarzeile. Ein "\n# mcp-run-compress: no-compress" am Ende
+ist an jedes gueltige bash-Skript anhaengbar, ohne dessen Bedeutung zu
+aendern, und in PostToolUse eindeutig erkennbar. Vor der Umsetzung empirisch
+absichern -- insbesondere fuer mehrzeilige Commands und Heredocs.
+REVIEW ABGENOMMEN 2026-08-15 (main). End-to-end am echten Hook gemessen,
+nicht nur ueber die Testsuite:
+
+  PostToolUse, 'cargo build', Balken mit 3000 \r-Zustaenden (46893 Zeichen)
+  -> updatedToolOutput.stdout = 15 Zeichen, Inhalt 'Progress: 3000%'
+     also der LETZTE Zustand, hookEventName korrekt gespiegelt
+
+Der no-compress-Bypass laeuft wie in der Messung dieses Tickets vorgezeichnet
+ueber eine Markierung statt ueber das Praefix:
+
+  Pre:  'no-compress ls -la' -> "ls -la\n# mcp-run-compress: no-compress"
+  Post: derselbe Command     -> keine Ersetzung, Original bleibt stehen
+
+Die bekannte Grenze (Exit != 0 feuert PostToolUseFailure, dort traegt
+updatedToolOutput nicht) ist als #24 erfasst und vom Maintainer in Kenntnis
+dieser Grenze beauftragt -- kein Grund, den Umbau aufzuhalten.
