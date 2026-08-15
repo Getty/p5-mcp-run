@@ -1,0 +1,81 @@
+---
+claimed_at: 2026-08-15T08:32:17Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T08:20:32Z
+created: 2026-08-15T05:58:06Z
+id: 16
+priority: high
+started: 2026-08-15T06:09:19Z
+status: done
+title: Fortschrittsbalken hebeln die Compression komplett aus (\r wird nie normalisiert)
+updated: 2026-08-15T08:32:17Z
+---
+
+Reproduziert Session 0a4d56b3, 2026-08-15. lib/MCP/Run/Compress.pm, betrifft die
+Pipeline als Ganzes, nicht einen einzelnen Filter.
+
+Die gesamte Pipeline denkt in Zeilen und splittet ueberall an /\n/. Ein
+Wagenruecklauf (\r) trennt fuer sie keine Zeile. Moderne Build-Tools zeichnen
+ihren Fortschritt aber genau so: cargo, npm, pnpm, yarn, pip, docker, wget, curl
+schreiben tausende Zustaende mit \r uebereinander, und im Terminal sieht der
+Nutzer nur den letzten. Fuer die Pipeline ist das EINE Zeile.
+
+Stage 1 (strip_ansi) entfernt \x1b[...-Sequenzen, \r bleibt unangetastet.
+max_lines greift bei einer Zeile nicht. Bleibt truncate_lines_at -- und das
+setzen 27 der 48 Filter nicht, darunter ausgerechnet:
+
+  ^make\b, ^cpanm\b, ^find\b, parsed:cargo:build, parsed:cargo:test,
+  parsed:docker:build, parsed:docker:run, parsed:npm:install,
+  parsed:pip:install, parsed:pnpm:install, parsed:yarn:install,
+  parsed:terraform:apply, parsed:terraform:plan, parsed:helm:install,
+  parsed:rsync, parsed:ansible-playbook, parsed:git:status, ...
+
+Gemessen mit einem realistischen Balken (3000 Zustaende, 228785 Zeichen,
+0 Zeilenumbrueche, 2999 Wagenruecklaeufe):
+
+  cargo build     -> 228785 Zeichen  UNVERAENDERT
+  make all        -> 228785 Zeichen  UNVERAENDERT
+  npm install     -> 228785 Zeichen  UNVERAENDERT
+  docker build .  -> 228785 Zeichen  UNVERAENDERT
+
+Das ist der Kernzweck des Produkts, und er faellt bei der haeufigsten Form
+lauter Ausgabe komplett aus. Verschaerfend im Zusammenspiel mit dem Befund aus
+#9: alles ueber 30000 Bytes wird vom Harness persistiert und dem Modell nur als
+2-KB-Preview gezeigt. Ein durchgereichter Balken ist also nicht bloss teuer, er
+verdraengt die eigentliche Ausgabe aus dem Blickfeld.
+
+EMPFOHLENER FIX -- \r normalisieren, direkt nach strip_ansi und vor allen
+zeilenbasierten Stufen: je Zeile die \r-getrennten Segmente auf das letzte
+reduzieren. Das bildet ab, was im Terminal tatsaechlich steht, statt einfach
+abzuschneiden -- der Nutzer verliert nichts, was er auf dem Bildschirm gesehen
+haette.
+
+ZWEI FALLSTRICKE fuer die Umsetzung:
+- \r\n (Windows-Zeilenenden) darf NICHT als Fortschrittsbalken gelesen werden.
+  Erst \r\n -> \n normalisieren, dann die verbleibenden \r behandeln.
+- Ein Balken endet oft mit einem \r ohne folgenden Text; das letzte Segment ist
+  dann leer. Die letzte NICHT-leere Variante ist meist das, was der Nutzer sieht.
+
+Als zweite Verteidigungslinie erwaegenswert, aber nachrangig: eine Obergrenze in
+Bytes fuer die Gesamtausgabe, damit kein kuenftiger Filter ohne
+truncate_lines_at dasselbe Loch aufreisst. Dann aber mit sichtbarem Marker --
+stilles Kuerzen ist genau das, was dieses Produkt beim Modell vermeiden will.
+
+Test: t/compress.t. Ein Balken mit \r als Eingabe, Erwartung ist eine drastisch
+kuerzere Ausgabe, die den LETZTEN Zustand enthaelt und nicht den ersten.
+REVIEW ABGENOMMEN 2026-08-15 (main). Balken mit 3000 \r-Zustaenden
+(46893 Zeichen) live: 'cargo build' -> 11 Zeichen.
+REVIEW ABGENOMMEN 2026-08-15 (main). Balken mit 3000 \r-Zustaenden
+(46893 Zeichen) live: 'cargo build' -> 11 Zeichen.
+KORREKTUR der Zahlen in der Abnahme-Notiz oben (2026-08-15, main): ich hatte
+compress() mit vertauschten Argumenten aufgerufen -- die Signatur ist
+compress($command, $stdout, $stderr) -- und ausserdem im Skalarkontext, wo die
+Liste ($out, $err) den stderr-Teil liefert. Die '11 Zeichen' waren damit nicht
+das, was ich zu messen glaubte. Korrekt nachgemessen, Balken mit 3000
+\r-Zustaenden (46893 Zeichen):
+
+  cargo build / make all / npm install  ->  je 15 Zeichen, Inhalt 'Progress: 3000%'
+
+Der LETZTE Zustand also, genau die Erwartung, die dieses Ticket formuliert hat.
+Die Abnahme steht, die Zahl war falsch abgeschrieben.
