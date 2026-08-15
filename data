@@ -1,0 +1,135 @@
+---
+claimed_at: 2026-08-15T07:44:54Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T07:44:54Z
+created: 2026-08-13T04:55:03Z
+id: 7
+priority: medium
+started: 2026-08-15T07:44:54Z
+status: done
+title: 'Legacy-Protokollpfad: Produktfrage offen (Testabdeckung erledigt)'
+updated: 2026-08-15T07:44:54Z
+---
+
+AKTUALISIERT nach #8: der Testteil dieses Tickets ist erledigt, die Produktfrage nicht.
+
+ERLEDIGT durch t/50-bash-bin.t (aus #8): der Test faehrt bin/mcp-run-bash als
+Subprozess ueber echtes stdio mit klassischem 'initialize'-Handshake (Zeile 90/91,
+protocolVersion 2025-11-25). Damit sind abgedeckt: MCP::Server::Transport::Stdio,
+die Revisionsverhandlung in legacy_request(), legacy_result() fuer 'initialize',
+und ein tools/call durch den Legacy-Context (mit uebersprungenem _check_meta).
+
+RESTLICHE TESTLUECKEN (klein, bewusst offen): 'ping' ueber legacy_result;
+'tools/list' ueber echtes stdio. Kein eigener Aufwand gerechtfertigt.
+
+SUBSTANZ, DIE BLEIBT -- Produktfrage, kein Testthema:
+MCP/Server/Legacy.pm Zeile 66 woertlich: 'It is a temporary convenience and will
+be removed again in a future release.' Die Datei fuehrt fuenf Legacy-Revisionen
+(2024-10-07 bis 2025-11-25). Faellt der Pfad, koennen Clients mit klassischem
+initialize-Handshake mcp-run-bash nicht mehr ansprechen -- und genau das sprechen
+Claude Desktop und Claude Code heute.
+
+NACHGETRAGEN 2026-08-13, zwei Punkte die die Lage praezisieren:
+
+1. FRUEHWARNUNG EXISTIERT BEREITS. Weil t/50-bash-bin.t den klassischen Handshake
+   faehrt, wird er rot, sobald MCP den Legacy-Pfad entfernt -- bei uns und bei den
+   Smokern, bevor ein User es merkt. Diesen Test also NICHT auf den modernen Pfad
+   umstellen; sein Wert liegt genau darin, dass er den alten spricht.
+
+2. DER PIN IST EINE UNTERGRENZE. cpanfile sagt requires 'MCP' => '0.15' und laesst
+   jedes kuenftige MCP zu. Ein MCP 0.16 ohne Legacy-Pfad landet automatisch bei
+   Usern. Wer hier handeln will, hat drei Optionen: (a) nichts tun und auf die
+   Frueherkennung durch (1) vertrauen; (b) eine Obergrenze im cpanfile -- in Perl
+   unueblich und blockiert Updates; (c) einen eigenen Shim, der Requests ohne _meta
+   selbst anreichert und uns von MCP::Server::Legacy unabhaengig macht.
+
+Empfehlung: (a), solange MCP den Pfad mitliefert. (c) erst bauen, wenn der Test
+rot wird oder MCP das Entfernen ankuendigt -- vorher ist es Code auf Verdacht.
+KORREKTUR 2026-08-13 (zweiter Nachtrag): Die oben behauptete Abdeckung der
+"Revisionsverhandlung in legacy_request()" existiert NICHT. Es wird gar nichts
+verhandelt.
+
+Nachgemessen am ausgelieferten Binary:
+
+  printf ... protocolVersion:"1999-01-01" | perl -Ilib bin/mcp-run-bash
+
+antwortet mit protocolVersion 2025-11-25, resultType complete, normalem
+serverInfo. Kein Fehler, keine Pruefung. MCP::Server::Legacy setzt seine eigene
+Revision und sieht die des Clients nie an -- jeder String passiert.
+
+Folgen:
+- Das hardcodierte 2025-11-25 in tool_call() (t/50-bash-bin.t) ist inert. Der
+  Test wuerde mit jedem beliebigen Versionsstring identisch gruen laufen.
+- Der Kommentar ueber tool_call() ("exercises the stdio transport's own
+  protocol-revision negotiation rather than hand-building a context") behauptet
+  Coverage, die es nicht gibt. Erste Haelfte stimmt (Transport, echtes stdio),
+  zweite Haelfte nicht.
+- Echte Revisionspruefung wird nur im Subtest "protocol contract" in
+  t/20-integration.t assertiert -- ueber den modernen Pfad mit _check_meta.
+
+UNBERUEHRT bleibt der Frueherkennungs-Wert aus Punkt 1 oben: t/50-bash-bin.t
+faehrt den klassischen Handshake und wird rot, sobald MCP den Legacy-Pfad
+entfernt. Das gilt weiter und die Empfehlung (a) bleibt richtig. Falsch war nur,
+Verhandlung als getestet zu fuehren.
+
+TODO (klein): Kommentar in t/50-bash-bin.t auf das korrigieren, was der Test
+wirklich abdeckt. Zweiter Fund derselben Runde: Zeile 76 buchstabiert
+'io.modelcontextprotocol/serverInfo' als Literal statt META_SERVER_INFO --
+passt heute exakt, aber bei einer Umbenennung liefert das //-Fallback still
+undef und der Fehler liest sich als "server name is wrong" statt "Protokoll-Key
+ist umgezogen".
+
+PRAEZISIERUNG 2026-08-15 (Session 0a4d56b3, beim Abarbeiten der beiden TODOs):
+Die obige Formulierung "MCP::Server::Legacy setzt seine eigene Revision und sieht
+die des Clients nie an" ist zu scharf. MCP/Server/Legacy.pm Zeile 22-23 schaut
+durchaus hin, verwirft aber nichts:
+
+  my $requested = $params->{protocolVersion} // '';
+  return (grep { $_ eq $requested } @VERSIONS) ? $requested : $VERSIONS[-1];
+
+Nachgemessen am gebauten Binary: '1999-01-01' -> Antwort '2025-11-25' (stiller
+Fallback), '2025-06-18' -> Antwort '2025-06-18' (echo). In beiden Faellen laeuft
+tools/call fehlerfrei. Die Schlussfolgerung des Tickets bleibt unveraendert
+richtig: abgelehnt wird nie etwas, und weil das im Test hardcodierte '2025-11-25'
+zufaellig $VERSIONS[-1] ist, laeuft t/50-bash-bin.t mit jedem beliebigen String
+identisch gruen. Nur die Begruendung war ungenau.
+
+BEIDE TODOS ERLEDIGT:
+- Der Kommentar ueber tool_call() nennt jetzt, was der Test wirklich abdeckt
+  (Transport + Legacy-Handshake mit uebersprungenem _check_meta), sagt
+  ausdruecklich, dass keine Revisionsverhandlung geprueft wird, verweist fuer die
+  echte Pruefung auf t/20-integration.t und haelt den Fruehwarn-Zweck samt
+  karr-Referenz fest, damit niemand den Test spaeter "modernisiert".
+- META_SERVER_INFO wird jetzt aus MCP::Constants importiert (steht dort in
+  @EXPORT_OK, t/20-integration.t macht es genauso), samt 'use MCP 0.15;'-Pin aus
+  demselben Grund wie dort. Hinweis zur Wirksamkeit: der Legacy-Pfad liefert
+  serverInfo heute doppelt, im Result-Body und in result._meta, der
+  //-Fallback feuert also nie. Der Zweck bleibt erfuellt -- faellt der
+  Body-Mirror weg, greift der Fallback, und eine Umbenennung des Keys kracht
+  beim Import statt still undef zu liefern.
+
+Damit ist an #7 nur noch die Produktfrage offen (Empfehlung (a): nichts tun,
+auf die Fruehwarnung durch t/50-bash-bin.t vertrauen). Zusatzbefund
+2026-08-15: die aktuellste Version auf CPAN ist weiterhin MCP 0.15, also exakt
+der Pin -- es gibt derzeit kein MCP ohne Legacy-Pfad, die Frage ist nicht akut.
+
+ENTSCHIEDEN 2026-08-15 durch den Maintainer: MCP 0.15 ist das Requirement.
+Was mit MCP 0.15 funktioniert, ist damit kein Bug mehr.
+
+Der Legacy-Protokollpfad existiert in 0.15, das cpanfile verlangt 0.15, echte
+stdio-Clients (Claude Desktop, Claude Code) sprechen ihn und werden bedient.
+Die Produktfrage ist damit beantwortet -- Weg (a) aus dem Ticket, ohne
+Vorbehalt: nichts bauen, keinen eigenen Shim, keine Obergrenze im cpanfile.
+
+Zusatzbefund derselben Runde: die aktuellste Version auf CPAN ist weiterhin
+MCP 0.15, also exakt der Pin. Es gibt derzeit gar kein MCP ohne Legacy-Pfad.
+
+Die Frueherkennung bleibt bestehen und ist der Grund, warum hier nichts
+Weiteres noetig ist: t/50-bash-bin.t faehrt den klassischen
+initialize-Handshake und wird rot, sobald ein kuenftiges MCP den Pfad
+entfernt. Erst dann -- und nur dann -- ist die Frage neu zu stellen. Diesen
+Test also weiterhin NICHT auf den modernen Pfad umstellen.
+
+Beide TODOs (Kommentar ueber tool_call(), META_SERVER_INFO) sind erledigt.
+Ticket geschlossen.
