@@ -6,6 +6,13 @@ use Symbol        qw( gensym );
 use JSON::MaybeXS ();
 use Path::Tiny    qw( path tempdir );
 
+# MCP::Constants is upstream, not ours — importing it does not weaken the
+# subprocess-only discipline below, which is about never loading MCP::Run*.
+# The version pin mirrors t/20-integration.t: without it a stale MCP in @INC
+# dies with "not exported by MCP::Constants" instead of naming the real cause.
+use MCP 0.15;
+use MCP::Constants qw( META_SERVER_INFO );
+
 # Coverage for bin/mcp-run-bash driven the way a real MCP client drives it:
 # a subprocess speaking JSON-RPC over stdio.
 #
@@ -71,9 +78,11 @@ subtest 'default config: serverInfo identifies the distribution' => sub {
   ok $init, 'got a response for initialize' or return;
 
   # 0.15 puts serverInfo in result._meta; the legacy handshake also mirrors it
-  # into the result body, which is where a legacy client reads it.
-  my $info = $init->{result}{serverInfo}
-    // $init->{result}{_meta}{'io.modelcontextprotocol/serverInfo'};
+  # into the result body, which is where a legacy client reads it. The _meta
+  # key comes from the constant, not spelled out: if MCP renames it, the
+  # import fails loudly instead of the // silently yielding undef and the
+  # failure reading as "server name is wrong".
+  my $info = $init->{result}{serverInfo} // $init->{result}{_meta}{+META_SERVER_INFO};
 
   is $info->{name},    'mcp-run-bash', 'server name is the distribution, not PerlServer';
   is $info->{version}, $dist_version,  'server version is the distribution version, not 1.0.0';
@@ -82,8 +91,20 @@ subtest 'default config: serverInfo identifies the distribution' => sub {
 done_testing;
 
 # A classic 'initialize' handshake followed by the tools/call. This is what
-# Claude Desktop and Claude Code send, and it exercises the stdio transport's
-# own protocol-revision negotiation rather than hand-building a context.
+# Claude Desktop and Claude Code send, and driving it through a real pipe
+# exercises MCP::Server::Transport::Stdio and the MCP::Server::Legacy
+# handshake path — the one that skips _check_meta — instead of hand-building
+# an MCP::Server::Context.
+#
+# It does NOT exercise protocol-revision negotiation: legacy_request() echoes
+# a known revision back and silently substitutes its newest ('2025-11-25')
+# for anything else, so no version string is ever rejected and this test runs
+# identically with any value here. Real revision checking is asserted in the
+# 'protocol contract' subtest of t/20-integration.t, over the modern path.
+#
+# Keep this on the classic handshake (see karr #7): its value is that it goes
+# red the day MCP drops the legacy path, which is the early warning that
+# Claude Desktop and Claude Code can no longer talk to mcp-run-bash.
 sub tool_call {
   my ($command) = @_;
   return (

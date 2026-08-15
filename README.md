@@ -62,6 +62,16 @@ When `compress` is enabled, the original command is fed into the filter
 pipeline so command-specific rules (e.g. `git status`, `make`, `kubectl`)
 match. See `MCP::Run::Compress::Filters` for the preset catalog.
 
+Ahead of the command-specific rules the pipeline normalises two things
+unconditionally: ANSI escapes are stripped, and carriage-return
+overwrites are collapsed to the last state on each line. The second one
+matters more than it sounds. A progress bar from cargo, npm, pip, docker
+or wget contains no newlines at all — it is thousands of states written
+over each other with `\r` — so to a line-based filter it is a *single*
+line, which `max_lines` cannot shorten. Collapsing it to what actually
+stayed on the screen turns a 224 KB bar into a couple of dozen bytes
+without hiding anything the user would have seen.
+
 ## Bonus: PreToolUse hook for Claude Code (mcp-run-compress)
 
 Same compression pipeline, but installed as a Claude Code hook so it
@@ -106,13 +116,24 @@ mounts those into a container that compresses them:
   __ec=$?
   docker run --rm -v "$__o:/in/stdout:ro" -v "$__e:/in/stderr:ro" \
        raudssus/mcp-run-compress:<pinned> \
-       --filter-files --cmd-b64 '<B64>' /in/stdout /in/stderr   # filter
+       --filter-files --cmd-b64 '<B64>' /in/stdout /in/stderr \
+    || { echo "mcp-run-compress: compression unavailable, raw output" >&2
+         cat "$__o"; cat "$__e" >&2; }                          # fallback
   exit $__ec
 }
 ```
 
 Host bash runs on the host. Docker runs only the compression. No chroot,
 no shared toolchain, no Perl on the host.
+
+The `||` branch matters more than it looks. Without it, anything that
+stops `docker run` — daemon not started, image not pulled yet, registry
+rate limit, user not in the `docker` group — takes the command's entire
+output with it: stdout and stderr sit in the temp files, nothing prints
+them, and the `trap` deletes them. The exit code still comes through
+correctly, so a failed compression is indistinguishable from a command
+that legitimately produced no output. With the fallback the mode
+degrades to *uncompressed* instead of *silent*.
 
 ### Which install mode gets written
 
@@ -144,8 +165,8 @@ are explicit: `docker pull … && … --install-claude` again.
 | `MCP_RUN_COMPRESS_INSTALL_MODE`  | `native` (default) or `docker`. The shipped Docker image bakes `docker`; native Perl installs leave it unset. Overrides both the hook command `mcp-run-compress --install-claude` writes and the rewrite `--hook` emits. |
 | `MCP_RUN_COMPRESS_IMAGE`         | Image ref for docker-mode hook. Pinned to `:<version>` in image |
 | `MCP_RUN_COMPRESS_NO_CO_AUTHORED`| Set to any value to disable Co-Authored-By replacement      |
-| `CO_AUTHORED_BY`                 | Replacement value for Co-Authored-By in git commits        |
-| `ANTHROPIC_MODEL`                | Fallback for CO_AUTHORED_BY if not set                     |
+| `CO_AUTHORED_BY`                 | Replacement value for Co-Authored-By in git commits. Must be a plain trailer value — words plus optional `<mail@host>`; anything else is rejected and no trailer is written |
+| `ANTHROPIC_MODEL`                | Fallback for CO_AUTHORED_BY if not set. Same restriction    |
 
 ## Co-Authored-By replacement for git commits
 
@@ -160,6 +181,20 @@ using Claude Code with different AI models to track which model was used.
   of that env var.
 - If no `Co-Authored-By` line exists, it will be appended to the commit message.
 - To disable this feature temporarily, set `MCP_RUN_COMPRESS_NO_CO_AUTHORED=1`.
+
+**The value is validated, not escaped.** It has to look like a trailer value:
+one or more words made of letters, digits and `. _ - + : /`, separated by
+single spaces, optionally followed by `<mail@host>`. `claude-opus-5`,
+`MiniMax-M2.7`, `Claude Opus 5 <noreply@anthropic.com>` and Bedrock-style ids
+like `us.anthropic.claude-opus-4-20250514-v1:0` all pass.
+
+Anything else — a quote, `$`, a backtick, a backslash, a newline — is
+rejected, and the command is then left completely untouched: no trailer.
+That is deliberate. The trailer is spliced *inside* the double-quoted `-m`
+argument, so a value carrying a quote would end the string and turn the rest
+into extra shell commands, and `$(…)` inside those quotes would simply run.
+Rejecting is also better than escaping: a silently mangled trailer sits in a
+real commit where nobody notices it, while a missing one is visible.
 
 **Example:**
 

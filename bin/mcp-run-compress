@@ -7,10 +7,16 @@ use warnings;
 use Getopt::Long qw( GetOptions );
 use MIME::Base64 qw( encode_base64 decode_base64 );
 use Encode qw( encode_utf8 );
-use JSON::MaybeXS ();
-use Path::Tiny qw( path );
-use MCP::Run::Bash;
-use MCP::Run::Compress;
+
+# Only core modules are loaded at compile time. JSON::MaybeXS, Path::Tiny
+# and the MCP::Run::* classes are required at RUNTIME by the path that
+# needs them, so a broken or half-upgraded install cannot kill the script
+# before a single line of runtime code has run. See run_hook(). karr #19.
+
+# The pass-through hook response as a literal: emitting it must not depend
+# on JSON::MaybeXS being loadable, because that is exactly what may be
+# missing when we need it.
+use constant HOOK_PASSTHROUGH => '{"hookSpecificOutput":{"hookEventName":"PreToolUse"}}';
 
 my ( $hook, $b64, $install, $help, $filter_files, $cmd_b64 );
 GetOptions(
@@ -46,10 +52,60 @@ sub _json {
   return JSON::MaybeXS->new( utf8 => 1, canonical => 1, convert_blessed => 1 );
 }
 
+# FAIL OPEN. A PreToolUse hook that exits non-zero tells Claude Code to
+# BLOCK the tool call, so anything this script cannot do must cost the user
+# compression, never their shell: on any failure we emit the pass-through
+# response and exit 0. Uncompressed output is a small harm, a dead Bash tool
+# in every session is a large one. That is why the modules are required at
+# runtime (below) rather than used at compile time — a `use` failure happens
+# before any eval here could catch it.
+#
+# Deliberately the OPPOSITE of lib/MCP/Run.pm, which loads MCP::Run::Compress
+# at COMPILE time so a broken compressor kills the server at startup instead
+# of at the user's first tools/call (Sharp Edge in CLAUDE.md, Changes 0.106).
+# Server: fail fast, it is a startup concern. Hook: fail open, it sits in the
+# critical path of every Bash call. Do NOT align these two — same as the two
+# compression defaults that intentionally differ. karr #19.
 sub run_hook {
-  my ( $self ) = @_;
+  # Drain stdin before anything can fail: whatever goes wrong below, the
+  # caller writing the hook payload must not hit a closed pipe.
+  my $raw = do { local $/; <STDIN> };
+
+  my $response = eval { hook_response($raw) };
+
+  if ( !defined $response ) {
+    print STDERR 'mcp-run-compress: compression unavailable, command passed '
+      . 'through unchanged: ' . _brief_error($@) . "\n";
+    $response = HOOK_PASSTHROUGH;
+  }
+
+  print $response;
+  return 0;
+}
+
+# First line of an error, without the "at FILE line N." tail. The hook runs
+# on every single Bash command; a full Perl stack trace on stderr would be
+# exactly the noise this product exists to remove.
+sub _brief_error {
+  my ($err) = @_;
+  $err = 'unknown error' unless defined $err && length $err;
+  ($err) = split /\n/, $err;
+  # "Can't locate Foo.pm in @INC" drags the entire @INC listing along; the
+  # module name is the whole diagnosis, the rest is a screenful.
+  $err =~ s/\s*\(\@INC entries checked:[^)]*\)//;
+  $err =~ s/\s*\(you may need to install the \S+ module\)//;
+  $err =~ s/\s+at\s+\S+\s+line\s+\d+[^\n]*\z//;
+  $err =~ s/\s+\z//;
+  $err = substr( $err, 0, 120 ) . '...' if length $err > 123;
+  return length $err ? $err : 'unknown error';
+}
+
+# Builds the hook response string. Dies if anything is missing — run_hook()
+# turns that into the pass-through response.
+sub hook_response {
+  my ($raw) = @_;
+  require JSON::MaybeXS;
   my $json = _json();
-  my $raw  = do { local $/; <STDIN> };
   my $in   = eval { $json->decode($raw) } || {};
   my $cmd  = $in->{tool_input}{command};
 
@@ -71,6 +127,7 @@ sub run_hook {
   }
 
   unless ($bypass) {
+    require MCP::Run::Compress;
     $cmd = MCP::Run::Compress->new->transform_command($cmd);
     my $encoded  = encode_base64( encode_utf8($cmd), '' );
     my $rewrite  = install_mode() eq 'docker'
@@ -79,8 +136,7 @@ sub run_hook {
     $out->{hookSpecificOutput}{updatedInput} = { command => $rewrite };
   }
 
-  print $json->encode($out);
-  return 0;
+  return $json->encode($out);
 }
 
 # Emitted when the hook is running inside the Docker image. The rewritten
@@ -98,7 +154,12 @@ sub docker_pipe_rewrite {
     q(trap 'rm -f "$__o" "$__e"' EXIT;),
     qq(bash -c "\$(printf %s '$encoded' | base64 -d)" >"\$__o" 2>"\$__e";),
     q(__ec=$?;),
-    qq(docker run --rm -v "\$__o:/in/stdout:ro" -v "\$__e:/in/stderr:ro" '$image' --filter-files --cmd-b64 '$encoded' /in/stdout /in/stderr;),
+    qq(docker run --rm -v "\$__o:/in/stdout:ro" -v "\$__e:/in/stderr:ro" '$image' --filter-files --cmd-b64 '$encoded' /in/stdout /in/stderr),
+    # Docker unreachable (daemon down, image unpulled, no docker group)?
+    # Degrade to uncompressed instead of to silent -- swallowing the
+    # output while still returning the real exit code makes a failing
+    # command look like a silent success to the model. karr #11.
+    q(|| { echo "mcp-run-compress: compression unavailable, raw output" >&2; cat "$__o"; cat "$__e" >&2; };),
     q(exit $__ec;),
     q(}),
   );
@@ -110,6 +171,12 @@ sub run_filter_files {
     print STDERR "mcp-run-compress: --filter-files needs STDOUT_PATH STDERR_PATH\n";
     return 2;
   }
+  # Deliberately NOT fail-open: this runs inside the docker container, and
+  # the host snippet emitted by docker_pipe_rewrite() falls back to the raw
+  # files on a non-zero exit. Dying loudly here is what triggers that.
+  require Path::Tiny; Path::Tiny->import('path');
+  require MCP::Run::Compress;
+
   my $command = defined $encoded ? decode_base64($encoded) : '';
   my $stdout  = path($stdout_path)->slurp_raw;
   my $stderr  = path($stderr_path)->slurp_raw;
@@ -132,15 +199,36 @@ sub run_command {
   my ( $encoded ) = @_;
   my $command = decode_base64($encoded);
 
+  # By the time we get here the hook has already rewritten the user's
+  # command into this call, so dying means the command never runs at all
+  # and the user gets an empty result instead of their output. Degrade to
+  # uncompressed rather than to nothing — same principle as the docker
+  # fallback in docker_pipe_rewrite(). Decided BEFORE anything is executed,
+  # so a later failure can never re-run the command. karr #19.
+  unless ( eval { require MCP::Run::Bash; require MCP::Run::Compress; 1 } ) {
+    print STDERR 'mcp-run-compress: compression unavailable ('
+      . _brief_error($@) . "), running uncompressed\n";
+    return run_uncompressed($command);
+  }
+
   my $server = MCP::Run::Bash->new;
   my $result = $server->execute( $command, undef, 1800 );
 
-  my $compressor = MCP::Run::Compress->new;
-  my ( $stdout, $stderr ) = $compressor->compress(
-    $command,
-    $result->{stdout} // '',
-    $result->{stderr} // '',
-  );
+  # The command has already run and we hold its output: if compression
+  # itself blows up, emit the raw streams instead of losing them.
+  my ( $stdout, $stderr ) = eval {
+    MCP::Run::Compress->new->compress(
+      $command,
+      $result->{stdout} // '',
+      $result->{stderr} // '',
+    );
+  };
+  unless ( defined $stdout ) {
+    print STDERR 'mcp-run-compress: compression failed ('
+      . _brief_error($@) . "), raw output\n";
+    ( $stdout, $stderr ) = ( $result->{stdout} // '', $result->{stderr} // '' );
+  }
+  $stderr = '' unless defined $stderr;
 
   if ( length $stdout ) {
     print STDOUT $stdout;
@@ -157,7 +245,25 @@ sub run_command {
   return $result->{exit_code} // 1;
 }
 
+# Last resort for --b64 when the compression stack will not load: run the
+# command with nothing but core Perl and let it write straight to our own
+# stdout/stderr. No IPC::Open3, no filtering, no timeout — the point is
+# that the user gets their command and its real exit code instead of an
+# empty result. karr #19.
+sub run_uncompressed {
+  my ($command) = @_;
+  my $rc = system( 'bash', '-c', $command );
+  return 127 if $rc == -1;
+  return 128 + ( $rc & 127 ) if $rc & 127;
+  return $rc >> 8;
+}
+
 sub install_claude {
+  # Deliberately NOT fail-open: this is an interactive installer, and an
+  # install that silently did nothing would be worse than a loud failure.
+  require Path::Tiny; Path::Tiny->import('path');
+  require JSON::MaybeXS;
+
   my $file = path( $ENV{HOME} // glob('~'), '.claude', 'settings.json' );
   my $json = JSON::MaybeXS->new(
     utf8            => 1,
@@ -175,35 +281,41 @@ sub install_claude {
   $cfg->{hooks}             //= {};
   $cfg->{hooks}{PreToolUse} //= [];
 
+  my $hook_present = 0;
   for my $group ( @{ $cfg->{hooks}{PreToolUse} } ) {
     next unless ref $group eq 'HASH' && ( $group->{matcher} // '' ) eq 'Bash';
     for my $h ( @{ $group->{hooks} // [] } ) {
       next unless ref $h eq 'HASH';
-      if ( ( $h->{command} // '' ) =~ /\bmcp-run-compress\b/ ) {
-        print "Already installed in $file\n";
-        return 0;
-      }
+      $hook_present = 1 if ( $h->{command} // '' ) =~ /\bmcp-run-compress\b/;
     }
   }
 
-  my $hook_cmd = install_mode() eq 'docker'
-    ? 'docker run --rm -i ' . image_ref() . ' --hook'
-    : 'mcp-run-compress --hook';
+  if ($hook_present) {
+    print "PreToolUse hook already installed in $file\n";
+  }
+  else {
+    my $hook_cmd = install_mode() eq 'docker'
+      ? 'docker run --rm -i ' . image_ref() . ' --hook'
+      : 'mcp-run-compress --hook';
 
-  push @{ $cfg->{hooks}{PreToolUse} }, {
-    matcher => 'Bash',
-    hooks   => [ { type => 'command', command => $hook_cmd } ],
-  };
+    push @{ $cfg->{hooks}{PreToolUse} }, {
+      matcher => 'Bash',
+      hooks   => [ { type => 'command', command => $hook_cmd } ],
+    };
 
-  $file->parent->mkpath unless $file->parent->exists;
-  $file->spew_utf8( $json->encode($cfg) );
-  print "Installed PreToolUse hook in $file\n";
+    $file->parent->mkpath unless $file->parent->exists;
+    $file->spew_utf8( $json->encode($cfg) );
+    print "Installed PreToolUse hook in $file\n";
+  }
 
+  # Installed independently of the hook: the skill is what tells the
+  # model that it is looking at compressed output and how to opt out.
+  # An already-installed hook must not mask a deleted or outdated skill.
+  # karr #12.
   my $skill = $file->parent->child(
     'skills', 'bash-output-is-compressed-prefix-no-compress-to-bypass', 'SKILL.md',
   );
-  $skill->parent->mkpath unless $skill->parent->exists;
-  $skill->spew_utf8(<<'SKILL');
+  my $skill_body = <<'SKILL';
 ---
 name: bash-output-is-compressed-prefix-no-compress-to-bypass
 description: READ THIS BEFORE RUNNING ANY Bash TOOL COMMAND. Every Bash tool call is routed through the mcp-run-compress hook, which strips columns, noise, and truncates long output so you see a compressed view — NOT the real shell output. If you need raw unfiltered output (full `ls -l` columns, verbose logs, exact byte counts, etc.), prefix the command with `no-compress ` for that single invocation.
@@ -221,7 +333,15 @@ To get the real, unmodified output for one command, prefix it with `no-compress 
 The hook strips the prefix and runs the rest raw. Use it whenever compressed
 output would hide something you actually need to see.
 SKILL
-  print "Installed skill at $skill\n";
+
+  if ( $skill->exists && $skill->slurp_utf8 eq $skill_body ) {
+    print "Skill already installed at $skill\n";
+  }
+  else {
+    $skill->parent->mkpath unless $skill->parent->exists;
+    $skill->spew_utf8($skill_body);
+    print "Installed skill at $skill\n";
+  }
 
   return 0;
 }
@@ -273,7 +393,9 @@ USAGE
   mcp-run-compress --install-claude
       Patch ~/.claude/settings.json to register the hook as a PreToolUse
       hook on the Bash tool. The hook command written into settings.json
-      matches the current install mode. Idempotent.
+      matches the current install mode. Hook and skill are installed
+      independently, each idempotent, so a deleted skill is restored
+      even when the hook is already in place.
 
   mcp-run-compress [--help]
       Print this help.
@@ -316,6 +438,16 @@ NOTES
 
   * The hook only rewrites the Bash `command`; it does not set a
     permission decision, so the usual allow/deny prompts keep firing.
+  * The hook is fail-open. A PreToolUse hook that exits non-zero blocks
+    the tool call, so if this script cannot load its own dependencies
+    (broken or half-upgraded install) it passes the command through
+    unchanged, exits 0, and notes it in one line on stderr. `--b64`
+    likewise runs the command uncompressed rather than not at all, and
+    returns its real exit code. You lose compression, never your shell.
+  * In docker mode, if the compression container cannot run (daemon
+    down, image not pulled, user not in the docker group), the raw
+    uncompressed output is emitted instead of nothing. The exit code of
+    the original command always comes through unchanged.
   * Background commands (`run_in_background: true`) and commands that
     already reference `mcp-run-compress` are not rewritten.
   * Prefix a command with `no-compress ` to bypass compression for that
@@ -379,7 +511,9 @@ The hook is C<docker run --rm -i raudssus/mcp-run-compress --hook> and
 rewrites commands to a host-side shell snippet that runs the original
 command on the host, captures its output into temp files, and mounts
 those into a Docker container for compression. The host needs only
-C<bash>, C<mktemp>, C<base64>, and C<docker> — no Perl.
+C<bash>, C<mktemp>, C<base64>, and C<docker> — no Perl. If the container
+cannot run, the raw uncompressed output is emitted rather than nothing;
+the original exit code is preserved either way.
 
 =back
 
@@ -399,6 +533,8 @@ drop a minimal skill under
 C<~/.claude/skills/bash-output-is-compressed-prefix-no-compress-to-bypass/>
 that tells Claude about the C<no-compress > bypass prefix. The hook
 command written into C<settings.json> matches the current install mode.
+Hook and skill are installed independently and each is idempotent, so a
+deleted skill is restored even if the hook is already registered.
 
 =item C<--hook>
 
@@ -408,11 +544,21 @@ that rewrites the Bash C<command> according to the install mode.
 Background jobs (C<run_in_background: true>) and already-wrapped
 commands pass through unchanged.
 
+Fail-open: if the script cannot load its own dependencies it still
+emits a valid pass-through response and exits 0. A PreToolUse hook that
+exits non-zero blocks the tool call, so a broken install must never be
+able to take the user's Bash tool down with it.
+
 =item C<--b64 BASE64>
 
 Native-mode executor. Decode the base64 command, run it via
 L<MCP::Run::Bash>, compress stdout and stderr, emit them with the
 original exit code.
+
+By this point the hook has already rewritten the user's command into
+this call, so failing silently would mean the command never runs. If the
+compression stack cannot be loaded the command is run uncompressed
+instead, still with its real exit code.
 
 =item C<--filter-files --cmd-b64 BASE64 STDOUT_PATH STDERR_PATH>
 
@@ -420,6 +566,10 @@ Docker-mode filter. Read captured stdout and stderr from two files,
 compress them using the decoded command as context, emit compressed
 stdout to fd 1 and compressed stderr to fd 2. Invoked by the
 pipe-through-docker rewrite.
+
+Deliberately not fail-open: the host-side snippet falls back to the raw
+captured files when this exits non-zero, so a loud failure here is what
+keeps the output flowing.
 
 =item C<--help>
 

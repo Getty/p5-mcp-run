@@ -76,7 +76,7 @@ installierbar (`raudssus/mcp-run-compress`) — kein Perl auf dem Host nötig.
 | `MCP_RUN_COMPRESS_INSTALL_MODE` | native | native oder docker |
 | `MCP_RUN_COMPRESS_IMAGE` | raudssus/mcp-run-compress:latest | Docker Image (pinned in image) |
 | `MCP_RUN_COMPRESS_NO_CO_AUTHORED` | - | Co-Authored-By deaktivieren |
-| `CO_AUTHORED_BY` | - | Replacement für Co-Authored-By |
+| `CO_AUTHORED_BY` | - | Replacement für Co-Authored-By (validiert: Wörter + optional `<mail@host>`, sonst kein Trailer) |
 | `ANTHROPIC_MODEL` | - | Fallback für CO_AUTHORED_BY |
 
 **Bypass:**
@@ -98,7 +98,12 @@ installierbar (`raudssus/mcp-run-compress`) — kein Perl auf dem Host nötig.
 - Erbt `format_result()` von `MCP::Run`
 
 **MCP::Run::Compress** (lib/MCP/Run/Compress.pm):
-- 10-Stage Filter-Pipeline: strip_ansi, filter_stderr, match_output, transform, strip_lines, keep_lines, truncate, head/tail, max_lines, on_empty
+- 11-Stage Filter-Pipeline: strip_ansi, collapse_cr, filter_stderr, match_output, transform, strip_lines, keep_lines, truncate, head/tail, max_lines, on_empty
+- `collapse_cr` läuft unkonditional, nicht per Filter-Attribut: es reduziert je
+  Zeile die `\r`-getrennten Segmente auf das letzte nicht-leere, bildet also ab,
+  was im Terminal steht. Ohne die Stufe gingen Fortschrittsbalken (cargo, npm,
+  docker, pip, wget) ungekürzt durch — sie sind für `split /\n/` **eine** Zeile,
+  und 28 der 48 Filter setzen kein `truncate_lines_at`
 - 30+ Command-spezifische Filter (ls, git, make, kubectl, cargo, cpanm, etc.)
 - `_parse_command()` für git-style subcommands
 
@@ -159,6 +164,8 @@ mit (Dev-Loop `prove -lr t/` unberührt).
 - **MCP >= 0.15 erforderlich** (cpanfile-Pin). Ab 0.15 ist die Protocol-Revision Teil *jedes* Requests: `params._meta` muss `protocolVersion` und `clientCapabilities` tragen, sonst weist `MCP::Server::_check_meta` vor dem Dispatch mit `Missing protocol version` ab. Wer im Test einen nackten `MCP::Server::Context` baut, umgeht den Transport und landet im modernen Pfad — dann fallen scheinbar unabhängige Subtests gleichzeitig um. `initialize` heisst dort `server/discover`, `serverInfo` liegt in `result._meta`
 - Echte stdio-Clients laufen weiter über `MCP::Server::Legacy` (klassischer `initialize`-Handshake, `_check_meta` übersprungen) — MCP dokumentiert diesen Pfad aber als temporär, siehe karr #7
 - `MCP::Run::Compress` wird in lib/MCP/Run.pm **zur Compile-Zeit** geladen, obwohl `_get_compressor` den Compressor lazy konstruiert. Absicht: ein fehlendes/kaputtes Compress-Modul soll den Server beim Start umbringen, nicht beim ersten `tools/call` des Nutzers. Das `use` nicht in ein `require` im Lazy-Loader zurückbauen
+- **Umgekehrt bei `bin/mcp-run-compress`: der Hook lädt seine Module zur Laufzeit und ist fail-open.** Das ist kein Widerspruch zum Punkt darüber, sondern die andere Seite derselben Überlegung. Der Server darf beim Start sterben, weil ein Client das merkt und niemand sonst betroffen ist. Der Hook sitzt im kritischen Pfad des Bash-Tools: stirbt er, ist Exit 2 für Claude Code kein Fehler, sondern *„Tool-Call blockieren"* — eine halb kaputte Perl-Installation legt dann jede Bash-Command in jeder Session still. Er gibt deshalb bei jedem Ladefehler die Pass-Through-Antwort und Exit 0 zurück, mit einer Zeile auf stderr. `--b64` führt den Command dann unkomprimiert aus statt ihn zu verschlucken — dort ist der Hook die einzige Instanz, die ihn überhaupt noch ausführen würde. Die beiden Defaults NICHT angleichen.
+- Nicht fail-open, und das mit Absicht: `--filter-files` (Lautstärke ist genau das, was den `||`-Fallback des Docker-Snippets auslöst) und `--install-claude` (ein Installer, der still nichts tut, ist schlimmer als einer, der scheitert)
 - `serverInfo`-Identität (`mcp-run-bash`/`$VERSION`) liegt als Klassen-Default in lib/MCP/Run/Bash.pm, nicht in `bin/` — damit Library-Nutzer sie mitbekommen. Mojo::Base-Mechanik: skill `perl-mojo`
 
 ## Weitere Runner-Ideen

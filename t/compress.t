@@ -1,6 +1,7 @@
 use Test::More;
 use lib 'lib';
 use MCP::Run::Compress;
+use File::Temp qw(tempdir);
 
 subtest 'compress ls -la' => sub {
   my $c = MCP::Run::Compress->new;
@@ -275,6 +276,166 @@ subtest 'transform_command Co-Authored-By override' => sub {
   my $replaced = $c->transform_command($trailer_in_msg);
   like $replaced, qr/Co-Authored-By: MiniMax-M2\.7"/, 'replacement keeps the closing quote';
   unlike $replaced, qr/Co-Authored-By: Claude/, 'old trailer replaced';
+
+  done_testing;
+};
+
+subtest 'Co-Authored-By value is validated before it reaches the shell' => sub {
+  delete local $ENV{MCP_RUN_COMPRESS_NO_CO_AUTHORED};
+  delete local $ENV{ANTHROPIC_MODEL};
+  delete local $ENV{CO_AUTHORED_BY};
+
+  my $c = MCP::Run::Compress->new;
+
+  # Both code paths of the git-commit command_transform: the injection (no
+  # trailer yet) and the replacement (trailer already present).
+  my $inject  = q{git commit -m "harmless"};
+  my $replace = qq{git commit -m "harmless\n\nCo-Authored-By: Claude <noreply\@anthropic.com>"};
+
+  # What a Co-Authored-By trailer legitimately looks like must keep working.
+  for my $ok (
+    'claude-opus-5',
+    'MiniMax-M2.7',
+    'Claude Opus 5 <noreply@anthropic.com>',
+    'us.anthropic.claude-opus-4-20250514-v1:0',
+  ) {
+    local $ENV{CO_AUTHORED_BY} = $ok;
+    my $q = quotemeta $ok;
+    like $c->transform_command($inject), qr/Co-Authored-By: $q"\z/,
+      "accepted, injected: $ok";
+    like $c->transform_command($replace), qr/Co-Authored-By: $q"\z/,
+      "accepted, replaced: $ok";
+  }
+
+  # Anything that would turn the trailer into shell code is refused, and a
+  # refusal means the command comes back untouched -- no half-written
+  # trailer, no mangled commit message.
+  my %rejected = (
+    'closing double quote'   => 'evil" ; echo pwned ; echo "',
+    'command substitution'   => 'evil $(echo pwned)',
+    'backtick'               => 'evil `echo pwned`',
+    'variable expansion'     => 'evil $HOME',
+    'backslash'              => 'evil\\',
+    'newline'                => "evil\necho pwned",
+    'single quote'           => "O'Brien",
+    'semicolon'              => 'evil; echo pwned',
+    'leading space'          => ' evil',
+  );
+  for my $why (sort keys %rejected) {
+    local $ENV{CO_AUTHORED_BY} = $rejected{$why};
+    is $c->transform_command($inject), $inject,
+      "rejected ($why): injection path leaves the command untouched";
+    is $c->transform_command($replace), $replace,
+      "rejected ($why): replacement path leaves the command untouched";
+  }
+
+  # The fallback variable goes through the same gate ...
+  {
+    delete local $ENV{CO_AUTHORED_BY};
+    local $ENV{ANTHROPIC_MODEL} = 'evil" ; echo pwned ; echo "';
+    is $c->transform_command($inject), $inject,
+      'ANTHROPIC_MODEL is validated too';
+  }
+
+  # ... and an invalid explicit setting is refused instead of silently
+  # falling back to the other variable.
+  {
+    local $ENV{CO_AUTHORED_BY}  = 'evil" ; echo pwned ; echo "';
+    local $ENV{ANTHROPIC_MODEL} = 'claude-opus-5';
+    is $c->transform_command($inject), $inject,
+      'invalid CO_AUTHORED_BY does not fall back to ANTHROPIC_MODEL';
+  }
+
+  # The claim is not "the string differs" but "no foreign command runs".
+  # Execute the rewritten command against a stub git inside a temp dir; the
+  # marker only appears if the payload became shell code of its own.
+  my $tmp    = tempdir(CLEANUP => 1);
+  my $marker = "$tmp/pwned";
+  open my $stub, '>', "$tmp/git" or die "cannot write git stub: $!";
+  print $stub qq{#!/bin/sh\ntouch "$tmp/git-ran"\nexit 0\n};
+  close $stub;
+  chmod 0755, "$tmp/git";
+
+  local $ENV{CO_AUTHORED_BY} = qq{evil" ; touch "$marker" ; echo "};
+  my $rewritten = $c->transform_command($inject);
+  {
+    local $ENV{PATH} = "$tmp:$ENV{PATH}";
+    system('bash', '-c', $rewritten);
+  }
+  ok -e "$tmp/git-ran", 'the rewritten command really ran (stub git was called)';
+  ok !-e $marker, 'nothing but git ran: no foreign command from the payload';
+
+  done_testing;
+};
+
+subtest 'carriage returns collapse to what the terminal actually shows' => sub {
+  my $c = MCP::Run::Compress->new;
+
+  # A progress bar the way cargo, npm, pip, docker and friends draw it:
+  # thousands of states written over each other with \r, not a single
+  # newline in the whole output. Every line-based stage of the pipeline is
+  # blind to this -- for split(/\n/) it is one line.
+  my $states = 3000;
+  my $bar = join("\r", map {
+    sprintf '[%-40s] %3d%% eta %ds', '#' x int($_ * 40 / $states), int($_ * 100 / $states), $states - $_
+  } 1 .. $states) . "\r";  # bars usually end on a bare \r
+
+  cmp_ok length($bar), '>', 150_000, 'fixture is a fat progress bar';
+  is scalar(() = $bar =~ /\n/g), 0, 'fixture has no newline at all';
+
+  # Filters without truncate_lines_at -- the 28 that had no defence at all.
+  for my $command ('cargo build', 'make all', 'npm install', 'docker build .') {
+    my ($out, $err) = $c->compress($command, $bar, '');
+    cmp_ok length($out), '<', 200, "$command: bar collapsed instead of passed through";
+    like $out, qr/100% eta 0s/, "$command: the state the user saw last is kept";
+    unlike $out, qr/eta 2999s/, "$command: the first state is gone";
+    unlike $out, qr/\r/, "$command: no carriage return left in the output";
+  }
+
+  # Progress goes to stderr just as often (pip, docker, wget, curl).
+  {
+    my ($out, $err) = $c->compress('pip install foo', '', $bar);
+    my $both = "$out$err";
+    cmp_ok length($both), '<', 200, 'stderr bar collapsed too';
+    like $both, qr/100% eta 0s/, 'stderr: last state kept';
+  }
+
+  # process() is the second, hashref-shaped copy of the same pipeline.
+  {
+    my $r = $c->process('cargo build', $bar, '');
+    cmp_ok length($r->{stdout}), '<', 200, 'process(): bar collapsed';
+    like $r->{stdout}, qr/100% eta 0s/, 'process(): last state kept';
+  }
+
+  # Windows line endings are line endings, not a progress bar: \r\n must
+  # not swallow the line in front of it.
+  {
+    my $crlf = "first line\r\nsecond line\r\nthird line\r\n";
+    my ($out) = $c->compress('make all', $crlf, '');
+    like $out, qr/^first line$/m,  'CRLF: first line survives';
+    like $out, qr/^second line$/m, 'CRLF: second line survives';
+    like $out, qr/^third line$/m,  'CRLF: third line survives';
+    unlike $out, qr/\r/, 'CRLF: carriage returns removed';
+  }
+
+  # The last segment of a bar is usually empty (trailing bare \r); what the
+  # user saw is the last non-empty one. And a bar that ends in \r\n must
+  # still collapse the \r-separated states in front of it.
+  {
+    my ($out) = $c->compress('make all', "step 1\rstep 2\rstep 3\r", '');
+    is $out, 'step 3', 'trailing bare \r does not blank the line';
+
+    my ($mixed) = $c->compress('make all', "dl 10%\rdl 55%\rdl 100%\r\nunpacking done\n", '');
+    is $mixed, "dl 100%\nunpacking done", 'bar ending in CRLF: states collapsed, next line intact';
+  }
+
+  # Nothing is taken away from output that has no \r: it must come through
+  # the new stage byte-identical.
+  {
+    my $plain = "one\ntwo\nthree\n";
+    my ($out) = $c->compress('make all', $plain, '');
+    is $out, "one\ntwo\nthree", 'output without \r is untouched by the new stage';
+  }
 
   done_testing;
 };

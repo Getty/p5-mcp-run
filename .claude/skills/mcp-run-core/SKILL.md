@@ -21,7 +21,7 @@ MCP-Run bietet zwei Produkte aus einer Codebase:
 |------|---------|
 | **tool** | Das MCP-Tool `run`, registriert via `MCP::Run` |
 | **filter** | Einzelne Compression-Stage in `MCP::Run::Compress` |
-| **stage** | Eine Position in der 10-Stage Pipeline |
+| **stage** | Eine Position in der 11-Stage Pipeline |
 | **wire format** | JSON über stdio (MCP-Protokoll) — einzige I/O-Variante |
 | **hook** | PreToolUse Hook für Claude Code's Bash-Tool |
 | **rewrite** | Umschreiben von `Bash`-Tool-Calls zu `mcp-run-compress --b64` |
@@ -87,9 +87,16 @@ command-spezifischen Filter nicht.
 
 ## Pipeline (Compression)
 
-10-Stage Filter-Pipeline in `MCP::Run::Compress`:
+11-Stage Filter-Pipeline in `MCP::Run::Compress`:
 
-`strip_ansi → filter_stderr → match_output → transform → strip_lines → keep_lines → truncate → head/tail → max_lines → on_empty`
+`strip_ansi → collapse_cr → filter_stderr → match_output → transform → strip_lines → keep_lines → truncate → head/tail → max_lines → on_empty`
+
+`collapse_cr` ist unkonditional und kennt kein Filter-Attribut. Grund: ein
+Fortschrittsbalken ist für `split /\n/` eine einzige Zeile, `max_lines` greift
+dort nicht, und 28 der 48 Filter setzen kein `truncate_lines_at` — ohne die
+Stufe liefe ein 224-KB-Balken bei `cargo build`, `make`, `npm install` und
+`docker build` unverändert durch. Die Stufe ist identitätserhaltend, wenn kein
+`\r` vorkommt (über 56 Command-Varianten byte-identisch nachgemessen).
 
 `_parse_command()` erkennt git-style subcommands, damit die 30+ Command-Filter
 (ls, git, make, kubectl, cargo, cpanm, …) matchen können.
@@ -111,8 +118,8 @@ command-spezifischen Filter nicht.
 | `MCP_RUN_COMPRESS_INSTALL_MODE` | native | native oder docker |
 | `MCP_RUN_COMPRESS_IMAGE` | raudssus/mcp-run-compress:latest | Docker Image |
 | `MCP_RUN_COMPRESS_NO_CO_AUTHORED` | — | Co-Authored-By deaktivieren |
-| `CO_AUTHORED_BY` | — | Replacement |
-| `ANTHROPIC_MODEL` | — | Fallback für CO_AUTHORED_BY |
+| `CO_AUTHORED_BY` | — | Replacement. Validiert: Wörter plus optional `<mail@host>`, sonst wird der Command unverändert gelassen |
+| `ANTHROPIC_MODEL` | — | Fallback für CO_AUTHORED_BY, gleiche Einschränkung |
 
 **Bypass-Mechanismen** (nicht entfernen, sind intentional):
 - `no-compress <cmd>` — einzelne Command ohne Compression

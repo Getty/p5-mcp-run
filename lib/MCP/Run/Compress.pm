@@ -162,6 +162,79 @@ sub _match_parsed_command {
   return 1;
 }
 
+=func _co_authored_by
+
+    my $model = _co_authored_by();
+
+The Co-Authored-By replacement value from C<CO_AUTHORED_BY>, falling back to
+C<ANTHROPIC_MODEL>, or undef when neither is set or the value is not a valid
+trailer.
+
+The value gets spliced into a shell command line -- inside the double quotes
+of the C<git commit -m "..."> argument -- so it is checked against a narrow
+positive list of what a Co-Authored-By trailer may look like: a name of one or
+more words separated by single spaces, each word built from letters, digits
+and C<. _ - + : />, optionally followed by an C<< <mail@host> >> address.
+Anything else is refused; in particular C<">, C<\>, C<$>, backtick and newline
+can never pass, so the value cannot end the quoted string, start a command
+substitution or append a command of its own.
+
+A refused value means the command is returned B<unchanged> -- no trailer at
+all. Rejecting beats escaping here: a silently escaped, mangled trailer sits in
+a real commit where nobody notices it, a missing trailer is honest. For the
+same reason an invalid C<CO_AUTHORED_BY> does not fall back to
+C<ANTHROPIC_MODEL>: the explicit setting wins, and is then refused.
+
+=cut
+
+my $CO_AUTHORED_WORD  = qr{[A-Za-z0-9][A-Za-z0-9._:/+-]*};
+my $CO_AUTHORED_MAIL  = qr{[A-Za-z0-9._%+-]+\@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+};
+my $CO_AUTHORED_VALUE = qr{\A$CO_AUTHORED_WORD(?:[ ]$CO_AUTHORED_WORD)*(?:[ ]<$CO_AUTHORED_MAIL>)?\z};
+
+sub _co_authored_by {
+  my $model = $ENV{CO_AUTHORED_BY} || $ENV{ANTHROPIC_MODEL};
+  return undef unless defined $model && length $model;
+  return undef unless $model =~ $CO_AUTHORED_VALUE;
+  return $model;
+}
+
+=func _collapse_cr
+
+    my $text = _collapse_cr($text);
+
+Reduces carriage-return overwrites to what a terminal would actually show.
+Build tools (cargo, npm, pip, docker, wget, curl, ...) draw progress by
+writing thousands of states over each other with C<\r> and no newline at all.
+Every stage of the pipeline splits on C</\n/>, so such a bar is a single line
+to it: C<max_lines> cannot help, and the 28 of 48 filters without
+C<truncate_lines_at> pass the whole thing through untouched.
+
+Per line, the C<\r>-separated states are reduced to the last non-empty one --
+what stayed on screen. Two details matter: C<\r\n> is a line ending and is
+normalized to C<\n> first, so Windows output is not mistaken for a progress
+bar; and a bar usually ends on a bare C<\r>, which makes the last state empty,
+so the last B<non-empty> one wins. Text without a C<\r> is returned unchanged,
+byte for byte.
+
+=cut
+
+sub _collapse_cr {
+  my ($text) = @_;
+  return $text unless defined $text && index($text, "\r") >= 0;
+
+  $text =~ s/\r\n/\n/g;
+  return $text unless index($text, "\r") >= 0;
+
+  my @lines = split /\n/, $text, -1;
+  for my $line (@lines) {
+    next unless index($line, "\r") >= 0;
+    my @states = grep { length } split /\r/, $line, -1;
+    $line = @states ? $states[-1] : '';
+  }
+
+  return join "\n", @lines;
+}
+
 sub _build_default_filters {
   my $self = shift;
 
@@ -842,8 +915,10 @@ sub _build_default_filters {
     command => '\bgit\b[^&|;]*?(?<![=])\bcommit\b',
     command_transform => sub {
       my ($cmd) = @_;
-      my $model = $ENV{CO_AUTHORED_BY} || $ENV{ANTHROPIC_MODEL};
-      return $cmd unless $model;
+      # Validated, not escaped: an unusable value means no trailer at all,
+      # for both the replacement and the injection below. See _co_authored_by.
+      my $model = _co_authored_by();
+      return $cmd unless defined $model;
       if ($cmd =~ /Co-Authored-By:/i) {
         # [^\n"]+ instead of [^\n]+: when the trailer sits at the end of a
         # -m "..." message, the greedy class used to swallow the closing
@@ -966,21 +1041,29 @@ sub compress {
     $err =~ s/\x1b\[[0-9;]*[a-zA-Z]//g;
   }
 
-  # Stage 2: Match output short-circuit
+  # Stage 2: Collapse carriage-return overwrites (progress bars). Has to
+  # run before every line-based stage below -- they all split on /\n/, so a
+  # bar of thousands of \r-separated states is one single line to them and
+  # slips through whole. Unconditional, not per filter: a filter that does
+  # not opt in would reopen the hole (karr #16).
+  $out = _collapse_cr($out);
+  $err = _collapse_cr($err);
+
+  # Stage 3: Match output short-circuit
   for my $match (@{$matched_filter->{match_output}}) {
     if ($out =~ /$match->{pattern}/) {
       return ($match->{message}, $err);
     }
   }
 
-  # Stage 3: Transform lines (if transform coderef provided).
+  # Stage 4: Transform lines (if transform coderef provided).
   # A transform may return undef to drop a line (e.g. git diff --stat's
   # summary line) — filter those out so join() doesn't warn.
   if ($matched_filter->{transform}) {
     $out = join("\n", grep { defined } map { $matched_filter->{transform}->($_) } split(/\n/, $out));
   }
 
-  # Stage 4: Strip lines matching
+  # Stage 5: Strip lines matching
   if (@{$matched_filter->{strip_lines_matching}}) {
     my @out_lines = split(/\n/, $out);
     @out_lines = grep {
@@ -996,7 +1079,7 @@ sub compress {
     $out = join("\n", @out_lines);
   }
 
-  # Stage 5: Keep lines matching (if any)
+  # Stage 6: Keep lines matching (if any)
   if (@{$matched_filter->{keep_lines_matching}}) {
     my @out_lines = split(/\n/, $out);
     @out_lines = grep {
@@ -1012,14 +1095,14 @@ sub compress {
     $out = join("\n", @out_lines);
   }
 
-  # Stage 6: Truncate lines at N chars
+  # Stage 7: Truncate lines at N chars
   if ($matched_filter->{truncate_lines_at} > 0) {
     my $max = $matched_filter->{truncate_lines_at};
     $out = join("\n", map { length $_ > $max ? substr($_, 0, $max) . '...' : $_ } split(/\n/, $out));
     $err = join("\n", map { length $_ > $max ? substr($_, 0, $max) . '...' : $_ } split(/\n/, $err)) if length $err;
   }
 
-  # Stage 7: Head/Tail lines
+  # Stage 8: Head/Tail lines
   if ($matched_filter->{head_lines} > 0) {
     my @lines = split(/\n/, $out);
     my $head = $matched_filter->{head_lines};
@@ -1037,7 +1120,7 @@ sub compress {
     $out = join("\n", @lines[-min($matched_filter->{tail_lines}, @lines)..-1]);
   }
 
-  # Stage 8: Max lines
+  # Stage 9: Max lines
   if ($matched_filter->{max_lines} > 0) {
     my @out_lines = split(/\n/, $out);
     if (@out_lines > $matched_filter->{max_lines}) {
@@ -1045,7 +1128,7 @@ sub compress {
     }
   }
 
-  # Stage 9: On empty
+  # Stage 10: On empty
   if (!length trim($out) && $matched_filter->{on_empty}) {
     $out = $matched_filter->{on_empty};
   }
@@ -1115,6 +1198,11 @@ sub process {
     $out =~ s/\x1b\[[0-9;]*[a-zA-Z]//g;
     $err =~ s/\x1b\[[0-9;]*[a-zA-Z]//g;
   }
+
+  # Collapse carriage-return overwrites before the line-based stages -- see
+  # the stage of the same name in compress().
+  $out = _collapse_cr($out);
+  $err = _collapse_cr($err);
 
   for my $match (@{$matched_filter->{match_output} // []}) {
     if ($out =~ /$match->{pattern}/) {
@@ -1201,7 +1289,10 @@ sub transform_command {
 
   my $parsed = $self->_parse_command($command);
 
-  for my $key (keys %{$self->filters}) {
+  # sort: the loop stops at the first filter carrying a command_transform.
+  # With more than one such filter, unsorted keys would pick the winner by
+  # Perl's per-process hash order.
+  for my $key (sort keys %{$self->filters}) {
     my $filter = $self->filters->{$key};
 
     my $matches = 0;

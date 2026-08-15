@@ -1,6 +1,128 @@
 Revision history for MCP-Run
 
 {{$NEXT}}
+  - Report 128 + signal number when a command is killed by a signal,
+    the way a shell does. `$? >> 8` is 0 for a signalled child, so
+    execute() returned exit_code 0 and format_result derived no error
+    flag from it: a build killed by the OOM killer came back looking
+    like a successful run with oddly short output. Measured before the
+    fix, SIGTERM, SIGKILL and SIGSEGV all reported success; they now
+    report 143, 137 and 139.
+  - Enforce the timeout even when the command refuses to die. The
+    alarm was cleared before the SIGTERM was sent, leaving the final
+    waitpid unguarded, so a child ignoring the signal blocked the
+    server until it finished on its own — `trap "" TERM; sleep 12` at
+    timeout 2 returned after 12 seconds, and would have held an MCP
+    server for an hour just as happily. SIGTERM is now followed by a
+    two second grace period and then SIGKILL; the same case returns
+    after 4.
+  - Run each command in its own process group so a timeout reaches its
+    grandchildren. Only the bash itself used to be signalled, so
+    `sleep 987 & wait` left the sleep running after the timeout had
+    already reported 124. The child sets its own group before exec'ing
+    (open3 with '-', then setpgrp, then exec), which needs no setsid
+    binary. Note for anyone revisiting this: doing it from the parent
+    after open3 does not work, setpgid on an already-exec'd child is
+    refused with EACCES, and it fails silently.
+  - Fall back to the configured default for any timeout the runner
+    cannot enforce, instead of switching the timeout off. The tool
+    schema accepts any integer and `0 // 30` is 0, so a client asking
+    for `timeout: 0` reached alarm(0), which cancels the alarm rather
+    than firing it — an unbounded command holding the server for as
+    long as it liked. Infinities are the same trap through a different
+    door: `1e400` is numeric and greater than zero, so it passed a
+    plain positivity check, and alarm() then took it for a negative
+    argument, warned, and ran unbounded anyway. Non-numeric values,
+    NaN, infinities and anything alarm() cannot represent now fall back
+    together. `0` does not mean unbounded, and says so in the POD and
+    in the schema description. No `minimum` was added to the schema on
+    purpose: MCP answers a validation failure with a bare
+    `-32602 Invalid arguments` that never names the offending field, so
+    a rejected call would tell the model less than a quietly corrected
+    one — and the env-var path has no schema in front of it, so the two
+    would have disagreed. There is a test pinning that decision.
+  - Stop losing output when a signal interrupts the read loop.
+    `while (my @ready = $select->can_read)` treats an interrupted
+    select as end of input, so with any signal handler in the
+    embedding program the rest of the command's output was dropped
+    without a trace. The loop now runs on the handle count and retries;
+    a sysread returning EINTR is no longer taken for EOF.
+  - Close a second way around the timeout: a command that closed its
+    own pipes (`exec >/dev/null 2>&1; sleep 20`) hit EOF immediately,
+    disarmed the alarm and then blocked in an unguarded waitpid,
+    running to completion and reporting success. The reap now happens
+    inside the alarm window.
+  - Collapse carriage-return overwrites before the line-based filters
+    run. Every stage of the pipeline splits on /\n/, and a progress bar
+    has no newlines at all — cargo, npm, pnpm, yarn, pip, docker, wget
+    and curl draw thousands of states over each other with \r. Such a
+    bar is one line, so max_lines cannot help, and 28 of the 48 filters
+    set no truncate_lines_at: a measured 224 KB bar passed through
+    entirely unchanged for `cargo build`, `make`, `npm install` and
+    `docker build`, which is to say compression failed completely on
+    the single most common shape of noisy output. Each line is now
+    reduced to its last non-empty \r-separated state — what stayed on
+    the screen — so nothing the user saw is lost. \r\n is normalised to
+    \n first so Windows output is not mistaken for a progress bar. The
+    stage is unconditional and identity-preserving on input without \r,
+    verified byte for byte across 56 command variants.
+  - Validate CO_AUTHORED_BY and ANTHROPIC_MODEL instead of splicing
+    them into the command line unchecked. The trailer is written inside
+    the double quotes of the `git commit -m "..."` argument, so a value
+    containing a quote ended the string and turned whatever followed
+    into further shell commands, and `$(...)` needed no quote at all to
+    run. Demonstrated end to end with a stub git: the injected command
+    executed. A value now has to look like a trailer — words, plus an
+    optional <mail@host> — and anything else leaves the command
+    untouched. Rejecting beats escaping here: a mangled trailer sits
+    unnoticed in a real commit, a missing one does not.
+  - Never let a broken installation block the Bash tool. The hook
+    loaded its modules at compile time, so a missing dependency killed
+    it before any runtime code, and exit 2 from a PreToolUse hook does
+    not mean "error" to Claude Code, it means "block the tool call".
+    Every Bash command in every session would have failed until the
+    user repaired the install by hand — not hypothetical, this is
+    exactly the state the development machine was found in. The hook
+    now loads what it needs at runtime, answers any load failure with
+    the pass-through response and exit 0, and says so in one line on
+    stderr rather than dumping @INC. `--b64` runs the command
+    uncompressed instead of swallowing it, since by then it is the only
+    thing that would ever run it. `--filter-files` and
+    `--install-claude` stay loud on purpose. Loading only the compressor
+    rather than the whole MCP server stack also made the hook about
+    twice as fast.
+  - Print the raw captured output when docker-mode compression cannot
+    run. The rewritten command captured stdout and stderr into temp
+    files and left printing them to `docker run`; a docker daemon that
+    was down, an image not yet pulled, a rate limit or a user outside
+    the docker group meant nothing printed them and the trap deleted
+    them. The exit code still came through, so a command whose output
+    had vanished was indistinguishable from one that produced none. The
+    mode degrades to uncompressed rather than to silent.
+  - Install the hook and the skill independently in
+    `mcp-run-compress --install-claude`. An already-installed hook
+    returned early, so a deleted or outdated skill was never restored
+    while the command cheerfully reported success — and the skill is
+    what tells the model that it is looking at compressed output and
+    how to opt out with `no-compress`.
+  - Reject a tool call whose `command` is missing, empty or
+    whitespace-only before either gate and before execute(). Such a
+    request used to run `bash -c ""` and come back as "Exit code: 0",
+    a malformed request answered as a successful run. Over the wire the
+    reachable cases are the empty and whitespace-only string, which
+    pass the schema's `type: string` unchallenged. The check sits in
+    MCP::Run, so every future runner subclass inherits it, and
+    whitespace-only counts as empty because the allowlist path has
+    always said so.
+  - Stop emitting an uninitialized warning when `allowed_commands` is
+    set and the command is empty.
+  - Iterate filters in sorted order in transform_command, which stops
+    at the first filter carrying a command_transform. There is exactly
+    one such filter today, so Perl's per-process hash order decided
+    nothing; fixed while it is still free. The filter selection in
+    compress() is deliberately not sorted — it has an explicit
+    precedence rule instead, and sorting there would change which
+    filter wins.
 
 0.106     2026-08-13 18:19:29Z
   - Fix mcp-run-bash dying on every tools/call in its default
