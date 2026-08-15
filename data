@@ -1,0 +1,67 @@
+---
+claimed_at: 2026-08-15T08:26:05Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T08:21:01Z
+created: 2026-08-15T06:18:20Z
+id: 22
+priority: medium
+started: 2026-08-15T07:44:21Z
+status: done
+title: Fortschrittsbalken unbekannter Commands laufen weiter durch
+updated: 2026-08-15T08:26:05Z
+---
+
+Restluecke von #16, vom Worker benannt und von mir nachgemessen
+(Session 0a4d56b3, 2026-08-15).
+
+Die neue collapse_cr-Stufe sitzt INNERHALB der Pipeline. Matcht kein Filter,
+kehren compress() und process() vorher zurueck und reichen stdout/stderr roh
+durch -- die Normalisierung wird nie erreicht. Gemessen mit einem Balken von
+176729 Zeichen und null Zeilenumbruechen:
+
+  cargo build              ->      58 Zeichen  kollabiert
+  pnpm dlx irgendwas       ->  176729 Zeichen  unveraendert
+  bun install              ->  176729 Zeichen  unveraendert
+  gradle build             ->  176729 Zeichen  unveraendert
+  mein-eigenes-tool --go   ->  176729 Zeichen  unveraendert
+
+bun, gradle, deno, mise und jedes selbstgeschriebene Skript malen Balken und
+haben keinen Filter. Fuer die bleibt #16 ungeloest.
+
+ABWAEGUNG, und sie ist echt -- deshalb ein eigenes Ticket statt eines
+Nachtrags:
+
+FUER die Normalisierung auch ohne Filter: \r zu kollabieren ist kein Filtern,
+sondern Normalisieren auf das, was im Terminal steht. Der Nutzer verliert
+nichts, was er gesehen haette. Und es ist genau die Klasse Ausgabe, die dem
+Modell am meisten Kontext kostet.
+
+DAGEGEN: der Pass-Through fuer unbekannte Commands ist ein zugesagter Vertrag
+-- was kein Filter kennt, bleibt unangetastet. Wer binaeres oder sonst
+byte-genaues Material durch einen ungefilterten Command schiebt (etwa ein
+Stream, in dem \r Nutzdaten sind), bekaeme es kaputt zurueck. Heute kann er
+sich darauf verlassen, dass ihm nichts passiert.
+
+Ein Mittelweg waere, nur zu kollabieren, wenn die Ausgabe eindeutig ein Balken
+ist: viele \r und kaum oder keine \n. Das ist eine Heuristik mit einer
+erfundenen Schwelle -- vertretbar, aber es sollte bewusst so entschieden und
+in der Doku benannt werden, nicht nebenbei eingebaut.
+
+Bis zur Entscheidung ist die Luecke dokumentiert, nicht versteckt. #16 selbst
+ist damit nicht offen: fuer alle Commands MIT Filter greift die Stufe
+nachweislich (45 von 48 Filtern in der Stichprobe).
+REVIEW ABGENOMMEN 2026-08-15 (main). Die offene Abwaegung ist entschieden und
+umgesetzt: collapse_cr laeuft auch ohne passenden Filter. Live gemessen --
+'gradle build' 46893 -> 12 Zeichen, 'mein-tool --go' -> 14. Der Pass-Through
+bleibt sonst unangetastet, die Begruendung steht in Changes.
+KORREKTUR der Zahlen in der Abnahme-Notiz oben (2026-08-15, main): siehe #16 --
+compress() war mit vertauschten Argumenten aufgerufen. Korrekt nachgemessen,
+Balken mit 46893 Zeichen, Commands ohne jeden Filter:
+
+  gradle build   -> 15 Zeichen, Inhalt 'Progress: 3000%'
+  bun install    -> 15 Zeichen
+  mein-tool --go -> 15 Zeichen
+
+Die Aussage des Tickets ist damit unveraendert belegt: die Normalisierung greift
+auch ohne passenden Filter, und sie behaelt den letzten Zustand.
