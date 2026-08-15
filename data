@@ -1,0 +1,49 @@
+---
+claimed_at: 2026-08-15T09:08:33Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T09:08:33Z
+created: 2026-08-15T08:22:08Z
+id: 30
+priority: medium
+started: 2026-08-15T08:43:34Z
+status: done
+title: Programm-only parsed-Filter verdecken Filter mit Subcommand
+updated: 2026-08-15T09:08:33Z
+---
+
+Gefunden von einem Worker bei #17 (Session 325827e5, 2026-08-15).
+lib/MCP/Run/Compress.pm, Filterauswahl.
+
+Die Auswahlschleife bricht beim ersten passenden parsed-Filter ab
+('last if $matched_filter->{parsed_command}'). Ein Filter, der nur
+{ program => 'kubectl' } fuehrt, matcht damit auch 'kubectl get pods' --
+und ob er oder der spezifischere { program => 'kubectl', subcommand => 'get' }
+gewinnt, entscheidet die Hash-Reihenfolge.
+
+Das ist dieselbe Bugklasse wie #25, nur eine Ebene tiefer: dort konkurrierten
+Legacy-Regexe, hier konkurrieren parsed-Filter unterschiedlicher Spezifitaet.
+#25 hat die Kollision zwischen formenden und nicht-formenden Filtern
+aufgeloest, diese hier nicht.
+
+HEUTE FOLGENLOS: die aktuelle Tabelle enthaelt keinen solchen Fall -- der
+Worker hat bei #17 deshalb bewusst KEINEN nackten 'kubectl'-Filter gebaut,
+obwohl das POD einen versprach, und dasselbe fuer nacktes yarn/pnpm. Die
+Vermeidung ist in Filters.pm dokumentiert.
+
+Es fehlt aber der Stolperdraht. #25 hat einen Test hinterlassen, der
+Kollisionen zwischen formenden Filtern derselben Art faengt; die
+Spezifitaets-Ueberdeckung innerhalb der parsed-Filter faengt er nicht.
+
+Zwei Wege:
+ (a) Invariantentest: kein parsed-Filter darf einen anderen ueberdecken,
+     also kein { program => X } ohne subcommand, solange es ein
+     { program => X, subcommand => ... } gibt. Billig, faengt den naechsten
+     Autor ab.
+ (b) Spezifitaets-Vorrang in der Auswahl: der Filter mit mehr gesetzten
+     Kriterien gewinnt. Loest das Problem statt es zu verbieten, ist aber
+     eine echte Verhaltensaenderung an der Auswahl.
+
+(a) reicht, solange niemand einen program-only-Filter braucht. Wer (b) baut,
+sollte es zusammen mit der Vorrangregel aus #25 an einer Stelle tun, damit es
+nicht drei Regeln an drei Orten werden.
