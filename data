@@ -1,0 +1,48 @@
+---
+claimed_at: 2026-08-15T08:33:43Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T08:33:43Z
+created: 2026-08-15T08:12:54Z
+id: 27
+priority: medium
+started: 2026-08-15T08:33:43Z
+status: done
+title: Doku-Drift nach Wegfall von --b64 und --filter-files
+updated: 2026-08-15T08:33:43Z
+---
+
+Folgearbeit aus #9 (Session 0a4d56b3). bin/mcp-run-compress hat --b64 und
+--filter-files verloren; beide hatten nach dem Umbau auf PostToolUse keinen
+Aufrufer mehr (--b64 existierte nur fuer den nativen Rewrite, --filter-files
+nur fuer das Docker-Pipe-Snippet). Mit ihnen sind weg:
+
+  * der hartcodierte 1800s-Timeout
+  * docker_pipe_rewrite() samt Host-Snippet, Temp-Dateien und ||-Fallback
+  * MIME::Base64 als Abhaengigkeit des Skripts
+
+--help und POD in bin/mcp-run-compress sind nachgezogen. Offen sind Dateien
+ausserhalb des Umbau-Auftrags, die die alte Mechanik noch beschreiben:
+
+  Dockerfile:43                        Kommentar "Bash commands to --b64 ..."
+  .claude/skills/mcp-run-core/SKILL.md Zeile 27 (rewrite-Tabelle), Zeile 61
+                                       (1800s-Timeout), Zeile 139 (Testliste)
+  .claude/rules/mcp-run-rules.md       Zeile 96 (1800s hardcodes), Zeile 98
+                                       ("Hook rewrites Bash -> --b64")
+  .claude/agents/mcp-run-worker.md     Zeile 33 (1800s-Timeout-Hinweis)
+
+README.md, CLAUDE.md, Changes, dist.ini und cpanfile zieht der Maintainer
+selbst nach.
+
+Die 1800s-Stelle ist die wichtigste: sie steht in drei Dateien als Sharp Edge
+und als Pflicht-Mitzieher beim Aendern. Es gibt sie nicht mehr. Der 30s-Default
+in lib/MCP/Run/Bash.pm bleibt davon unberuehrt und weiterhin eine getrennte
+Sache.
+
+Neu zu dokumentieren waere im selben Zug:
+  * MCP_RUN_COMPRESS_MAX_BYTES (Default 29000) als Byte-Deckel der ersetzten
+    Ausgabe
+  * dass --install-claude jetzt ZWEI Hooks registriert und alte Installationen
+    migriert
+  * die drei Grenzen aus dem POD: Exit != 0 (siehe #24), Background-Commands,
+    PostToolUse-Hooks verketten sich nicht
