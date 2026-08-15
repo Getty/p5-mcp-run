@@ -1,0 +1,37 @@
+---
+claimed_at: 2026-08-15T09:08:06Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T09:08:06Z
+created: 2026-08-15T08:17:59Z
+id: 28
+priority: low
+started: 2026-08-15T08:43:21Z
+status: done
+title: Filter-Attribut 'replace' wird gespeichert und nie gelesen
+updated: 2026-08-15T09:08:06Z
+---
+
+Gefunden von einem Worker bei #25 (Session 325827e5, 2026-08-15).
+lib/MCP/Run/Compress.pm, register_filter.
+
+'replace' wird in den Filter-Hash uebernommen und von keiner Stufe der
+Pipeline je gelesen. Kein einziger der 48 Filter setzt es, deshalb ist es
+heute folgenlos.
+
+Es bleibt aber eine Falle, und seit #25 eine schaerfere: die Auswahl des
+Ausgabefilters beruecksichtigt nur Filter, die tatsaechlich etwas formen.
+Ein kuenftiger Filter, der ausschliesslich 'replace' setzt, waere danach
+nicht-formend, wuerde nie ausgewaehlt -- und fiele zusaetzlich in die neue
+Invariante "jeder Filter formt Ausgabe oder schreibt den Command um". Der
+Autor bekaeme also einen Testfehlschlag statt einer Erklaerung, warum sein
+Filter nichts tut.
+
+Zwei saubere Auswege:
+ (a) Entfernen. Wenn es nie implementiert wurde und niemand es vermisst, ist
+     das der ehrliche Weg.
+ (b) Implementieren, als eigene Pipeline-Stufe, und in _shapes_output
+     aufnehmen, damit ein Filter mit nur 'replace' korrekt als formend gilt.
+
+Was nicht geht, ist der jetzige Zustand: ein Attribut, das aussieht, als
+koennte man es benutzen, und das still ignoriert wird.
