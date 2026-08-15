@@ -1,0 +1,58 @@
+---
+claimed_at: 2026-08-15T08:31:50Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T08:26:19Z
+created: 2026-08-15T05:51:32Z
+id: 14
+priority: low
+started: 2026-08-15T07:48:38Z
+status: done
+title: 'Haertung: Compression-Container braucht kein Netzwerk'
+updated: 2026-08-15T08:31:50Z
+---
+
+Kleiner Haertungspunkt, aus der Durchsicht 2026-08-15. bin/mcp-run-compress,
+docker_pipe_rewrite().
+
+Der erzeugte Aufruf lautet heute
+
+  docker run --rm -v "$__o:/in/stdout:ro" -v "$__e:/in/stderr:ro" IMAGE --filter-files ...
+
+Der Container liest zwei read-only gemountete Dateien und schreibt nach stdout
+und stderr. Netzwerk braucht er dafuer nie, bekommt aber das Default-Bridge-Netz.
+'--network none' waere strikt besser und kostet nichts.
+
+Im selben Atemzug erwaegenswert, aber nicht dasselbe Thema: der Container laeuft
+per Default als root. Bei zwei ro-Mounts ist der Gewinn klein, deshalb hier nur
+als Randnotiz und nicht als Forderung.
+
+Beruehrt dieselbe Funktion wie #11 -- am besten zusammen erledigen, wenn #11
+ohnehin angefasst wird. Nicht mit #11 vermengen, solange dort ein Worker laeuft.
+
+ZWEITER, UNABHAENGIGER PUNKT (2026-08-15, Session 0a4d56b3) -- latent, heute
+unerreichbar: In lib/MCP/Run/Compress.pm kuerzen alle Pfade sichtbar
+('...', '... N lines omitted ...', '... N more lines ...') -- ausser dem
+elsif-Zweig fuer tail_lines ohne head_lines:
+
+  $out = join("\n", @lines[-min($matched_filter->{tail_lines}, @lines)..-1]);
+
+Der schneidet den Kopf ohne jeden Hinweis ab. Nachgezaehlt: kein einziger der
+48 Filter setzt heute tail_lines ohne head_lines, der Zweig ist also tot.
+Wer spaeter einen solchen Filter registriert, bekommt stille Kuerzung -- genau
+das, was dieses Produkt beim Modell vermeiden will. Marker nachruesten, solange
+es folgenlos ist.
+REVIEW 2026-08-15 (main): Punkt 1 abgenommen, Punkt 2 ausgegliedert als #31.
+
+Punkt 1 (--network none) ist umgesetzt und getestet: bin/mcp-run-compress
+hook_command() erzeugt 'docker run --rm -i --network none <image> --hook',
+t/40-compress-bin.t 'install: docker mode writes a networkless docker hook'
+haelt es fest. Der Titel dieses Tickets ist damit erledigt.
+
+Punkt 2 (stille Kuerzung bei tail_lines ohne head_lines) ist NICHT erledigt --
+und die Lagebeurteilung stimmt nicht mehr. Dieses Ticket stufte den Zweig als
+tot ein, weil kein Filter tail_lines ohne head_lines setzte. Inzwischen tut es
+einer: ^shopify\s+theme\s+(?:push|pull)\b mit tail_lines => 5, vermutlich aus
+#17 entstanden. Gemessen: 60 Zeilen Eingabe, 5 Zeilen Ausgabe, kein Marker,
+55 Zeilen spurlos weg. Der latente Fund ist also aktiv geworden, waehrend das
+Ticket offen lag. Details und Fix-Vorschlag in #31.
