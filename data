@@ -1,0 +1,138 @@
+---
+claimed_at: 2026-08-15T08:30:56Z
+claimed_by: main
+class: standard
+completed: 2026-08-15T08:19:57Z
+created: 2026-08-15T05:44:52Z
+id: 10
+priority: high
+started: 2026-08-15T05:48:15Z
+status: done
+title: 'MCP::Run::Bash::execute: vier Robustheitsfehler im Prozess-Handling'
+updated: 2026-08-15T08:30:56Z
+---
+
+Alle vier am laufenden Code reproduziert (Session 0a4d56b3, 2026-08-15), alle in
+lib/MCP/Run/Bash.pm execute().
+
+F1 -- Signalgetoetete Commands werden als ERFOLG gemeldet.
+Zeile 105: $exit_code = $? >> 8. Wird das Kind von einem Signal getoetet, steht
+der Signalwert im unteren Byte und $? >> 8 ist 0. Gemessen:
+
+  kill -SEGV $$   $? = 11   $? >> 8 = 0   -> exit_code 0
+  kill -KILL $$   $? =  9   $? >> 8 = 0   -> exit_code 0
+
+format_result() setzt is_error aus exit_code != 0, der Client bekommt also
+"Exit code: 0" ohne Fehlerflag. Praxisfall: ein vom OOM-Killer per SIGKILL
+beendeter Build sieht aus wie ein erfolgreicher Lauf mit abgeschnittener
+Ausgabe. Shells melden hier 128+N; das sollte execute() auch tun.
+
+F2 -- Der Timeout wird nicht durchgesetzt, wenn das Kind SIGTERM ignoriert.
+Zeile 95 loescht den Alarm (alarm(0)), erst danach folgen kill 'TERM' und
+waitpid (Zeilen 98/99). Der waitpid ist durch nichts mehr abgesichert.
+Gemessen mit dem Originalmuster:
+
+  bash -c 'trap "" TERM; sleep 12', timeout=2  ->  Rueckkehr nach 12,0 s
+
+Es wird zwar exit_code 124 gemeldet, aber erst wenn das Kind von selbst fertig
+ist. Bei 'trap "" TERM; sleep 3600' blockiert der MCP-Server eine Stunde. Es
+fehlt die Eskalation auf SIGKILL nach einer Gnadenfrist.
+
+F3 -- Enkelprozesse ueberleben den Timeout.
+kill 'TERM', $pid trifft nur die bash, nicht deren Kinder. Gemessen:
+
+  bash -c 'sleep 987 & echo gestartet; wait', timeout=2
+  -> exit 124 nach 2,0 s, danach laeuft 'sleep 987' weiter (pgrep -f bestaetigt)
+
+Jeder Timeout kann Prozesse zuruecklassen. Sauber waere eine eigene
+Prozessgruppe (setsid) und kill an -$pgid.
+
+F4 -- timeout => 0 schaltet den Timeout komplett ab.
+_handle_run: $args->{timeout} // $self->timeout -- 0 ist defined, der Default 30
+greift also nicht. alarm(0) loescht den Alarm, statt sofort auszuloesen.
+Gemessen: execute("sleep 3; echo fertig", undef, 0) laeuft 3 s durch, exit 0,
+kein Timeout. Das input_schema erlaubt timeout als integer ohne Untergrenze, ein
+Client kann also 0 schicken und den Server unbegrenzt binden. Entweder 0 (und
+negative Werte) auf den Default abbilden oder als ungueltig zurueckweisen --
+Entscheidung gehoert dokumentiert.
+
+Anmerkung zu F1/F2: beide aendern beobachtbares Verhalten (exit_code, Laufzeit).
+Regressionstests gehoeren nach t/10-bash.t.
+
+KORREKTUR 2026-08-15 -- der Loesungsvorschlag zu F3 in diesem Ticket war
+FALSCH und darf nicht wiederholt werden.
+
+Vorgeschlagen war "best-effort setpgrp($pid,$pid) direkt nach open3". Der
+Worker hat es gemessen statt geglaubt: der Aufruf scheitert bei JEDEM Versuch
+mit EACCES. Grund: IPC::Open3 kehrt erst zurueck, wenn das Kind bereits
+exec'd hat, und setpgid() auf ein Kind nach dem exec verweigert POSIX. Der
+Aufruf waere also ein stiller No-op geblieben und F3 ungefixt -- schlimmer als
+gar nichts, weil im Code eine Loesung gestanden haette.
+
+Was tatsaechlich funktioniert: open3(..., '-') forkt, ohne zu exec'en, und
+liefert im Kind 0 zurueck. Dort setzt das Kind seine eigene Gruppe
+(eval { setpgrp(0,0) }), exec't dann bash und faellt bei exec-Fehler auf
+POSIX::_exit(127). Reines Perl, kein setsid-Binary, also portabel. Die Kills
+gehen an -$pid mit Rueckfall auf $pid.
+
+ERLEDIGT: F1 (128+Signal, gemessen 143/137/139), F2 (SIGTERM, 2s Gnadenfrist,
+dann SIGKILL -- 'trap "" TERM; sleep 12' bei timeout=2 kehrt jetzt nach 4,0 s
+statt 12,0 s zurueck), F3 (Waise nachweislich weg), F4 (nicht-positive und
+nicht-numerische Timeouts fallen auf den Default). Jeder Fix einzeln
+zurueckgenommen und der zugehoerige Test rot gesehen.
+
+DREI ZUSATZFUNDE des Workers, mitgefixt:
+- Die Leseschleife brach bei EINTR ab: 'while (my @ready = $select->can_read)'
+  verlaesst die Schleife, wenn select unterbrochen wird -- Rest der Ausgabe
+  still verloren. Laeuft jetzt ueber $select->count und wiederholt bei leerem
+  can_read.
+- Der Timeout war durch Schliessen der Pipes umgehbar:
+  'exec >/dev/null 2>&1; sleep 20' bei timeout=1 lief 20,0 s und meldete
+  Erfolg -- die Leseschleife sah EOF, alarm(0) entwaffnete, der abschliessende
+  waitpid war ungeschuetzt. Der Reap liegt jetzt innerhalb des Alarmfensters.
+- Mit eigener Prozessgruppe erreicht ein Gruppen-Kill des Aufrufers das Kind
+  nicht mehr. execute() leitet HUP/INT/TERM weiter, aber nur Signale, die das
+  einbettende Programm nicht selbst belegt hat.
+
+NACHGEREICHT, noch offen: 'Inf' umgeht die Normalisierung aus F4.
+looks_like_number("1e400") ist wahr und Inf > 0 ebenfalls, der Wert landet in
+alarm(), Perl macht daraus ein negatives Argument und der Timeout ist komplett
+AUS. Gemessen: execute("sleep 8", undef, "1e400") laeuft 8,0 s durch, exit 0,
+plus Warnung 'alarm() with negative argument'. Also derselbe
+Serverblockade-Fall wie F4, nur ueber einen anderen Eingang -- und eine
+Warnung obendrein. Beim Worker nachgereicht. Der Env-Var-Pfad hat dasselbe
+Problem und liegt separat als #21.
+
+NACHTRAG ERLEDIGT 2026-08-15: Der Inf-Fall ist geschlossen -- und beim
+Nachmessen kam ein schlimmerer Nachbar zum Vorschein. alarm() wurde ueber den
+ganzen Wertebereich profiliert:
+
+  1e400 (Inf), 1e30, 2**31   numerisch, > 0  -> Warnung "negative argument",
+                                               KEIN Alarm
+  2**32, 2**40               numerisch, > 0  -> KEIN Alarm und KEINE Warnung
+  0.5                        numerisch, > 0  -> auf alarm(0) abgeschnitten,
+                                               Timeout aus
+  2**31-1                                    -> funktioniert, exakte Grenze
+
+Das Band ab 2**32 ist der unangenehmere Fall: dieselbe unbegrenzte Ausfuehrung
+wie bei Inf, aber ohne Warnung, an der man es bemerken koennte. 0.5 war der
+dritte Weg hinein.
+
+MAX_TIMEOUT = 2**31-1, also die gemessene Grenze statt einer geratenen.
+_usable_timeout verlangt jetzt definiert, numerisch, nicht NaN, > 0 und
+<= MAX_TIMEOUT. Bruchteile werden auf ganze Sekunden aufgerundet, mindestens
+1 -- damit ist alarm(0) unerreichbar, und die Meldung "Command timed out after
+Ns" nennt den Timeout, der wirklich lief.
+
+Nachgeprueft: Inf, -Inf, NaN, 2**31, 2**32, 0.5, 0, -5, "abc" fallen alle auf
+den Server-Default zurueck und der Timeout greift, bei null Warnungen. Die
+Rot-Phase ist eindruecklich: dieselbe Testdatei braucht ohne den Fix 108
+Sekunden statt 21 -- die Serverblockade auf der Uhr.
+
+Damit ist #10 komplett. #21 (Env-Var-Pfad in bin/mcp-run-bash) bleibt separat
+offen, ist aber entschaerft: der Server-Default wird jetzt selbst validiert,
+ein per MCP_RUN_TIMEOUT hereingereichtes Inf faellt also auf 30 durch.
+REVIEW ABGENOMMEN 2026-08-15 (main). Nicht den Notizen geglaubt, sondern am
+laufenden Code nachgemessen: SIGKILL -> exit_code 137; 'trap "" TERM; sleep 12'
+bei timeout=2 kehrt nach 4,0 s zurueck statt nach 12; timeout='1e400' greift
+nach 2,0 s auf den Server-Default. Tests in t/10-bash.t, Suite gruen.
