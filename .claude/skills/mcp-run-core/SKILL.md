@@ -1,6 +1,6 @@
 ---
 name: mcp-run-core
-description: Architecture and invariants for p5-mcp-run — the MCP-Run distribution. Two products (mcp-run-bash MCP server, mcp-run-compress Claude Code hook), shared compression pipeline, IPC::Open3 execution, [@Author::GETTY] release bundle.
+description: Load before editing p5-mcp-run — the mcp-run-bash server and mcp-run-compress hook, the shared compression pipeline, IPC::Open3 execution.
 user-invocable: false
 model: inherit
 ---
@@ -183,10 +183,10 @@ baut single-arch).
 
 ## Conventions
 
-- Style, Moose patterns, Module-Loading, cpanfile-Pinning: skill `perl-core`
+- Style, Moose patterns, Module-Loading, cpanfile-Pinning: skill `getty-perl-core`
 - Mojo::Base (Attribute, Defaults, lazy `sub {}`, Rollen) — die ganze Distribution
   baut darauf auf: skill `perl-mojo`
-- Bundle/POD/Changes/{{$NEXT}} Konventionen: skill `perl-release-author-getty`
+- Bundle/POD/Changes/{{$NEXT}} Konventionen: skill `getty-perl-release-author-getty`
 - dist.ini Plugins: skill `perl-release-dist-ini`
 - MCP-Server Setup (`MCP::Server`, `$server->tool()`): skill `perl-mcp`
 

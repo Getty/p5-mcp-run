@@ -6,12 +6,12 @@ allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
     - mcp-run-core
-    - perl-core
+    - getty-perl-core
     - perl-mojo
     - perl-mcp
-    - perl-release-author-getty
+    - getty-perl-release-author-getty
     - perl-release-dist-ini
-    - karr
+    - kanban-issues-karr-cli
 ---
 
 You are the mcp-run-worker for **MCP::Run**.

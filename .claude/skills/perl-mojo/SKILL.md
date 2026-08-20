@@ -1,8 +1,6 @@
 ---
-name: Perl Mojo
-description: Mojo::Base object system and the Mojolicious toolkit - attributes, defaults, roles, and the core Mojo::* helpers
-trigger: when working with Mojo::Base, Mojolicious, Mojo::UserAgent, Mojo::IOLoop, or perl-mojo
-category: language
+name: perl-mojo
+description: Use when writing Mojolicious or Mojo::Base code — attributes and defaults, roles, Mojo::UserAgent, Mojo::IOLoop, the core Mojo::* helpers.
 ---
 
 # Perl/Mojo – Object System & Toolkit
