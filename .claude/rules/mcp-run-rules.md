@@ -52,13 +52,13 @@ performance. Pure prose docs and `Changes` notes are not.
 ## Coordination — karr board (always in scope)
 
 Ticket coordination is the orchestrating agent's job, so `karr` is always in scope —
-don't invoke the `karr` skill first, just use it. Git-native kanban; state lives in
+don't invoke the `kanban-issues-karr-cli` skill first, just use it. Git-native kanban; state lives in
 `refs/karr/*`; this repo is a single distribution — one board, no cross-repo handoff.
 Day-to-day: `karr list --compact` / `karr board` for open work; `karr show ID` for
 detail; `karr create/edit/move/handoff` for the usual workflow; mutating commands
 auto-sync, `karr sync --pull|--push` for explicit exchange. Use karr to record
 decisions worth solidifying, drift to reconcile, and follow-up work that should not
-block the current change. Full command surface: skill `karr`.
+block the current change. Full command surface: skill `kanban-issues-karr-cli`.
 
 **Serialize board mutations when fanning out.** Keep implementation work parallel if
 you like, but collect results and then loop `karr move`/`handoff`/`sync` sequentially
@@ -115,6 +115,6 @@ Two products share one codebase but ship independently. Traps that will bite:
 
 ## Perl specifics — reference, don't restate
 
-Module loading, Moo patterns, cpanfile pinning: skill `perl-core`. `[@Author::GETTY]`
-bundle, POD, `{{$NEXT}}`: skill `perl-release-author-getty`. dist.ini mechanics:
+Module loading, Moo patterns, cpanfile pinning: skill `getty-perl-core`. `[@Author::GETTY]`
+bundle, POD, `{{$NEXT}}`: skill `getty-perl-release-author-getty`. dist.ini mechanics:
 `perl-release-dist-ini`. MCP server setup: `perl-mcp`. Don't duplicate.
