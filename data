@@ -1,0 +1,73 @@
+---
+class: standard
+completed: 2026-08-23T20:33:36Z
+created: 2026-08-23T20:20:45Z
+id: 37
+priority: high
+started: 2026-08-23T20:33:36Z
+status: done
+tags:
+- release
+title: Docker-Versionstags werden beim Build nicht gesetzt, das Plugin meldet trotzdem
+  Erfolg
+updated: 2026-08-23T20:33:36Z
+---
+
+Gefunden 2026-08-23 beim Verifizieren von `dzil build` / `dzil install` vor dem
+naechsten Release. Nicht in diesem Dist, aber es trifft dessen Release-Pfad.
+
+`dzil build` gibt aus:
+
+  Warning: failed to tag image as raudssus/mcp-run-compress:0:
+    Docker API error (500): normalizing image: normalizing name for compat API:
+    parsing reference "raudssus/mcp-run-compress:0:latest": invalid reference
+    format at API/Docker.pm line 106
+  Warning: failed to tag image as raudssus/mcp-run-compress:0.107: (dito)
+  Built image: sha256:925409fb...
+  Tagged: raudssus/mcp-run-compress:0, raudssus/mcp-run-compress:0.107
+
+Die letzte Zeile ist falsch. `podman images` zeigt danach nur
+
+  docker.io/raudssus/mcp-run-compress   latest   925409fb72bd
+
+Beide Versionstags fehlen. Das Plugin meldet Erfolg fuer etwas, das die Engine
+abgelehnt hat -- die Warnung geht in einem langen Build-Log unter, die
+Erfolgsmeldung ist die, die man liest.
+
+Ursache dem Anschein nach: der vollstaendige Ref 'image:tag' wird als `repo` an
+den Tag-Endpunkt gegeben, ohne `tag`-Parameter; Podman defaultet dann auf
+'latest' und baut daraus 'image:tag:latest'. Nicht verifiziert, nur aus der
+Fehlermeldung gelesen.
+
+Zustaendig ist Dist::Zilla::Plugin::Docker::API bzw. API::Docker
+(github.com/Getty/p5-api-docker) -- eigenes Dist, eigenes Repo, deshalb hier
+nur als Notiz. tag-Default ist ['latest', '%V', '%v'].
+
+Warum es hier steht: solange das offen ist, geht bei einem `dzil release`
+dieses Dists das Image vermutlich nur als :latest raus, ohne Versionstag, und
+das Log behauptet das Gegenteil. Vor dem naechsten Release pruefen -- nach dem
+Push mit `podman images` bzw. auf Docker Hub nachsehen, nicht dem Log glauben.
+
+
+Erledigt 2026-08-23. Ursache lag NICHT in p5-api-docker: dessen
+API::Docker::API::Images::tag bildet den Endpunkt korrekt ab (repo und tag als
+getrennte Parameter, so dokumentiert). Falsch war der Aufrufer im Plugin,
+p5-dist-zilla-plugin-docker-api, an zwei Stellen -- Client.pm im Build-Pfad und
+in tag_image (Release-Pfad).
+
+Fix dort als Commit 7b6cbf7 (noch nicht gepusht, nicht released):
+ - Der Ref wird am letzten Doppelpunkt getrennt, ausser es folgt noch ein
+   Slash -- dann gehoert er zu einem Registry-host:port.
+ - Ein vom Engine abgelehnter Tag landet nicht mehr in der Ergebnisliste. Das
+   war die zweite Haelfte des Bugs und der Grund, warum er so lange lief: das
+   Log meldete 'Tagged: ...' fuer Tags, die es nicht gab.
+ - t/45-image-ref-tagging.t, vier Subtests, drei davon vor dem Fix rot.
+
+End-to-End gegen dieses Dist verifiziert: vor dem Fix zeigte podman images nur
+:latest, danach :latest, :0 und :0.107. Gegenprobe nach 'dzil install' des
+Plugins ohne PERL5LIB-Trick ebenfalls gruen.
+
+Fuer das naechste Release dieses Dists ist die Gefahr damit lokal gebannt -- die
+installierte Plugin-Version ist die gepatchte. Sauber waere zusaetzlich ein
+Release des Plugins; solange das aussteht, haengt es an der lokalen
+Installation des Rechners, auf dem released wird.
