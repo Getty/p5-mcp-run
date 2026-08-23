@@ -45,15 +45,24 @@ this file.
 
 Long listing format (C<-l>, C<-la>, etc.) is detected automatically from the
 output. When detected, the filter strips permissions, owner, group, size,
-date, inode, and device information. Only the file type (C<d> or C<->) and
-the filename are preserved.
+date, inode, and device information. Only the file type letter and the
+filename are preserved.
+
+Every type C<ls -l> prints is recognised (C<-> C<b> C<c> C<d> C<D> C<l> C<p>
+C<s>), as is the character some systems append to the mode column for the
+file's alternate access method: C<.> for an SELinux context, C<+> for a POSIX
+ACL, C<@> for macOS extended attributes. For a symlink the preserved name is
+the whole C<< link -> target >>, because the target is the only thing the
+entry actually states.
 
 For non-long listings, common noise directories are filtered:
 F<node_modules>, F<.git>, F<.target>, F<.next>, F<.nuxt>, F<.cache>,
 F<__pycache__>, F<.DS_Store>, F<vendor/bundle>.
 
-    # Before: drwxr-xr-x 14 getty getty 4096 Apr 24 02:32 .build
+    # Before: drwxr-xr-x. 14 getty getty 4096 Apr 24 02:32 .build
     # After:  d .build
+    # Before: lrwxrwxrwx   1 getty getty    9 Apr 24 02:32 link -> target
+    # After:  l link -> target
 
 =item C<stat>
 

@@ -1,6 +1,21 @@
 Revision history for MCP-Run
 
 {{$NEXT}}
+  - Fix the ls filter doing nothing on every system whose `ls` marks the
+    mode column. Fedora, Rocky and RHEL append a `.` there for the
+    SELinux context, systems with POSIX ACLs a `+`, macOS an `@` for
+    extended attributes -- and the filter's regex demanded whitespace
+    directly after the nine rwx characters, so on those machines not one
+    line was ever collapsed and `ls -la` came back at full length. Plain
+    Debian appends nothing, which is the whole reason this survived: the
+    only test that would have caught it runs `ls` on the build host, and
+    on the development machine it passed. It took a CPAN smoker to
+    report it (GitHub #3, karr #35). The same regex accepted only `d`
+    and `-` as the type letter, so symlinks, devices, fifos, sockets and
+    doors went through uncollapsed everywhere, and a listing holding
+    nothing but such entries was not even recognised as a long listing.
+    All types are now handled; for a symlink the whole `link -> target`
+    is kept, because the target is the only thing the entry states.
   - Compress in a PostToolUse hook instead of rewriting the Bash
     command. `--install-claude` now registers the same command on two
     events: PostToolUse does the compression, PreToolUse keeps only what

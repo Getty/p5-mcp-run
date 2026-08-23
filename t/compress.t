@@ -33,6 +33,80 @@ OUTPUT
   done_testing;
 };
 
+# The mode column is not always exactly the ten characters this filter was
+# written for. `ls` appends an eleventh for the file's alternate access
+# method: `.` for an SELinux context (Fedora, Rocky, RHEL), `+` for a POSIX
+# ACL, `@` for macOS extended attributes. Debian without SELinux appends
+# nothing at all -- which is why the filter looked fine here for years while
+# it silently did nothing on the smokers' machines (GitHub #3, karr #35).
+#
+# The same regex carried a second, unrelated hole with the identical
+# mechanism: the type letter was `[d-]`, so everything that is neither a
+# plain file nor a directory -- symlinks, devices, fifos, sockets, doors --
+# went through uncollapsed, and a listing holding only such entries was not
+# even recognized as a long listing.
+subtest 'ls long listing: access-method suffixes and every file type' => sub {
+  my $c = MCP::Run::Compress->new;
+
+  # Each case is a complete listing: the `total` line has to disappear (the
+  # filter matched at all) and the entry has to collapse (the transform
+  # matched). Asserting the whole output catches both, and a case that only
+  # loses `total` is not silently counted as a pass.
+  my @cases = (
+    ['no suffix (Debian, no SELinux)',
+      '-rw-r--r--  1 getty getty   246 Mar 12 04:03 .gitignore', '- .gitignore'],
+    ['SELinux context, file',
+      '-rw-rw-r--. 1 cpansand cpansand     7 Aug 14 08:44 README.md', '- README.md'],
+    ['SELinux context, directory',
+      'drwx------. 2 cpansand cpansand  4096 Aug 14 08:44 .', 'd .'],
+    ['POSIX ACL',
+      '-rw-rw-r--+ 1 getty getty     7 Aug 14 08:44 README.md', '- README.md'],
+    ['macOS extended attributes',
+      '-rw-r--r--@ 1 getty staff     7 Aug 14 08:44 README.md', '- README.md'],
+    ['symlink keeps its target',
+      'lrwxrwxrwx  1 getty getty     9 Apr 24 02:32 link -> target.txt',
+      'l link -> target.txt'],
+    ['symlink with an SELinux context',
+      'lrwxrwxrwx. 1 getty getty     9 Apr 24 02:32 link -> target.txt',
+      'l link -> target.txt'],
+    ['character device (major, minor instead of a size)',
+      'crw-rw-rw-  1 root root   1,   3 Apr 24 02:32 null', 'c null'],
+    ['block device',
+      'brw-rw----+ 1 root disk   8,   0 Apr 24 02:32 sda', 'b sda'],
+    ['fifo',
+      'prw-r--r--  1 getty getty     0 Apr 24 02:32 fifo', 'p fifo'],
+    ['socket',
+      'srwxrwxr-x  1 getty getty     0 Apr 24 02:32 sock', 's sock'],
+    ['door (Solaris)',
+      'Dr--r--r--  1 root root       0 Apr 24 02:32 door', 'D door'],
+    ['a year instead of a time, for an old file',
+      '-rw-r--r--. 1 getty getty   246 Mar 12  2024 old.txt', '- old.txt'],
+  );
+
+  for my $case (@cases) {
+    my ($name, $line, $want) = @$case;
+    my ($out) = $c->compress('ls -la', "total 24\n" . $line . "\n", '');
+    $out =~ s/\s+\z//;
+    is $out, $want, $name;
+  }
+
+  # The listing from the bug report, verbatim.
+  my $reported = <<'OUTPUT';
+total 12
+drwx------. 2 cpansand cpansand 4096 Aug 14 08:44 .
+drwx------. 5 cpansand cpansand 4096 Aug 14 08:44 ..
+-rw-rw-r--. 1 cpansand cpansand    7 Aug 14 08:44 README.md
+OUTPUT
+
+  # No trailing newline in the expectation: the transform stage splits on
+  # /\n/ and rejoins, which drops it for every filter with a transform. That
+  # predates this fix and is not what this test is about.
+  my ($out) = $c->compress('ls -la', $reported, '');
+  is $out, "d .\nd ..\n- README.md", 'the listing from GitHub #3 collapses';
+
+  done_testing;
+};
+
 subtest 'compress stat' => sub {
   my $c = MCP::Run::Compress->new;
 

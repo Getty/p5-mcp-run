@@ -267,7 +267,16 @@ sub _build_default_filters {
   # ls: ultra-compact for long listing - only keep type + filename
   $self->register_filter(
     command => '^ls\b',
-    output_detect => qr(^[d-][rwx-]{9}.*\s+\d+\s+),
+    # The mode column is a type letter, nine rwx characters, and -- on some
+    # systems -- one more for the alternate access method: `.` for an SELinux
+    # context (Fedora, Rocky, RHEL), `+` for a POSIX ACL, `@` for macOS
+    # extended attributes, nothing at all on a plain Debian. That last case is
+    # the one this was written on, which is why a filter that did nothing
+    # whatsoever on the smokers' machines looked healthy here for years
+    # (GitHub #3, karr #35). The type letter is every type `ls -l` can print,
+    # not just file and directory: a listing of nothing but symlinks was not
+    # even recognized as a long listing before.
+    output_detect => qr(^[-bcdDlps][rwx-]{9}.*\s+\d+\s+),
     strip_lines_matching => [
       qr(^\s*$),
       qr(^total\s+\d+),
@@ -286,7 +295,14 @@ sub _build_default_filters {
     ],
     transform => sub {
       my ($line) = @_;
-      if ($line =~ m{^([d-])[rwx-]{9}\s+\d+\s+\S+\s+\S+\s+\d+\s+\w+\s+\d+\s+[\d:]+\s+(.+)$}) {
+      # type, nine mode characters, the optional access-method character
+      # (see output_detect above), links, owner, group, size, date, name.
+      # The size is `major, minor` for a device, which is why it is not a
+      # plain \d+. What survives is the type letter and the name -- for a
+      # symlink that name is `link -> target`, kept whole on purpose: the
+      # target is the only thing a symlink actually says, and dropping it
+      # would leave an entry that names a file and hides what it is.
+      if ($line =~ m{^([-bcdDlps])[rwx-]{9}[.+\@]?\s+\d+\s+\S+\s+\S+\s+\d+(?:,\s*\d+)?\s+\w+\s+\d+\s+[\d:]+\s+(.+)$}) {
         return $1 . " " . $2;
       }
       return $line;
