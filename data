@@ -1,0 +1,59 @@
+---
+claimed_at: 2026-08-23T19:24:03Z
+claimed_by: mcp-run-worker
+class: standard
+completed: 2026-08-23T19:24:03Z
+created: 2026-08-23T18:49:14Z
+id: 35
+priority: medium
+started: 2026-08-23T19:13:07Z
+status: done
+tags:
+- github
+- portability
+title: 'GH #3: ls-Filter greift nicht, wo ls SELinux-Punkte an den Modus haengt'
+updated: 2026-08-23T19:24:03Z
+---
+
+Gemeldet 2026-08-15 von eserte, GitHub-Issue #3, auf Fedora 43 und Rocky Linux 9.
+
+t/50-bash-bin.t erwartet, dass der Kompressionsfilter eine ls-Zeile zu
+"- README.md" zusammenzieht. Auf den beiden Systemen bleibt die volle Zeile
+stehen:
+
+  -rw-rw-r--. 1 cpansand cpansand 7 Aug 14 08:44 README.md
+
+Der Punkt hinter dem Modus ist der Unterschied: SELinux-Systeme haengen ihn an,
+Debian nicht. Der Filter matcht den Modus offenbar ohne dieses Zeichen und
+greift deshalb dort nie -- der zweite Fehler ("compression filters actually
+run") ist die Folge davon, nicht ein eigener Fehler.
+
+Der Filter selbst ist zu weiten, nicht der Test. Auf einem System ohne SELinux
+faellt das nie auf.
+
+
+Erledigt 2026-08-23, Commit abbb38e (noch nicht gepusht, nicht released).
+
+Der Filter war an zwei Stellen zu eng, mit demselben Mechanismus:
+
+1. Das gemeldete Problem -- die transform-Regex verlangte Whitespace direkt
+   hinter den neun rwx-Zeichen. SELinux haengt dort '.' an, POSIX-ACLs '+',
+   macOS '@'. Auf diesen Systemen kollabierte der Filter keine einzige Zeile.
+2. Nicht gemeldet, aber derselbe Fehler: der Typ-Buchstabe war '[d-]'.
+   Symlinks, Devices, FIFOs, Sockets und Doors gingen ueberall ungekuerzt
+   durch, auf jedem System. output_detect teilte die Zeichenklasse -- ein
+   Listing aus lauter solchen Eintraegen wurde nicht einmal als Long Listing
+   erkannt.
+
+Beides behoben. Die Groessenspalte nimmt jetzt zusaetzlich das 'major, minor'
+eines Device auf; ohne das haette die Aufnahme von c/b das Listing erkannt und
+dann jede Device-Zeile stehen lassen -- schlechter als vorher. Bei Symlinks
+bleibt 'link -> target' ganz erhalten.
+
+Verifiziert: 13 von 14 Assertions des neuen Subtests in t/compress.t sind vor
+dem Fix rot, die einzige gruene ist die Debian-Baseline ohne Suffix. Volle
+Suite gruen, Aequivalenz- und Kollisionstest ueber vier PERL_HASH_SEED-Werte.
+t/50-bash-bin.t behaelt seine Erwartung unveraendert.
+
+Offen und bewusst nicht angefasst: '--time-style=long-iso' matcht die
+Datumsfelder ebenfalls nicht. Bestandsproblem, eigenes Ticket wert.
