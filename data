@@ -1,0 +1,43 @@
+---
+class: standard
+completed: 2026-08-23T19:12:55Z
+created: 2026-08-23T18:48:51Z
+id: 34
+priority: high
+started: 2026-08-23T19:12:55Z
+status: done
+tags:
+- github
+- mcp-api
+title: 'GH #2: t/20-integration.t liest Servername, Version und Capabilities als undef'
+updated: 2026-08-23T19:12:55Z
+---
+
+Gemeldet 2026-08-11 von eserte, GitHub-Issue #2, Verdacht auf MCP 0.15.
+
+  Failed test "server name"     got: undef  expected: "RunServer"
+  Failed test "server version"  got: undef  expected: "0.001"
+  Failed test "tools capability"
+  Failed test "initialize"      (t/20-integration.t line 28)
+
+Die initialize-Antwort traegt Name und Version nicht mehr dort, wo der Test sie
+liest. Zeitlich nach GH #1 gemeldet und vermutlich dieselbe Wurzel: eine
+API-Bewegung in MCP zwischen 0.08 und 0.15, die dieses Dist nicht nachvollzogen
+hat. Erst GH #1 klaeren, dann pruefen ob das hier mit erledigt ist.
+
+Hier mit MCP 0.15 gegenpruefen -- die Version ist installiert.
+
+
+Nachtrag 2026-08-23: Bereits behoben und ausgeliefert. Fix ist Commit 05ecc6d
+(2026-08-13), nachgezogen von 0f9dfb4, released als 0.106 am 2026-08-13 --
+zwei Tage nach dem Report.
+
+Ursache war wie im Ticket vermutet eine API-Bewegung, aber nur im Test: MCP 0.15
+macht die Protocol-Revision zum Bestandteil jedes Requests (params._meta), und
+serverInfo liegt in result._meta statt im result-Body; 'initialize' heisst
+'server/discover'. Der Test baute einen nackten Context und umging damit den
+Transport. cpanfile pinnt seither MCP 0.15 -- das war die eigentliche Luecke,
+die Abhaengigkeit war unversioniert.
+
+Nicht 'dieselbe Wurzel wie GH #1': #33 war ein unblessed Context, hier ist es das
+fehlende _meta. Zwei verschiedene Testfehler, zufaellig beide in derselben Datei.
