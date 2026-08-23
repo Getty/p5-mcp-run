@@ -1,0 +1,43 @@
+---
+class: standard
+completed: 2026-08-23T19:12:55Z
+created: 2026-08-23T18:48:30Z
+id: 33
+priority: high
+started: 2026-08-23T19:12:55Z
+status: done
+tags:
+- github
+- mcp-api
+title: 'GH #1: has_scope auf unblessed reference -- dieselbe Ursache wie Net::Async::MCP
+  GH #1'
+updated: 2026-08-23T19:12:55Z
+---
+
+Gemeldet 2026-06-28 von eserte, GitHub-Issue #1. t/20-integration.t:
+
+  Cant call method "has_scope" on unblessed reference
+    at MCP/Server.pm line 189
+
+eserte liefert die Regression mit: laeuft unter MCP 0.08 und 0.10, bricht ab
+0.12 und 0.13.
+
+MCP/Server.pm:189 ruft $context->has_scope(...). Ab MCP 0.12 muss das ein
+MCP::Server::Context-Objekt sein; hier kommt eine unblessed Referenz an.
+
+Identisch mit Net::Async::MCP GH #1 -- eine Ursache, zwei Distributionen.
+Gemeinsam beheben.
+
+
+Nachtrag 2026-08-23: Bereits behoben und ausgeliefert -- das Ticket ist aus der
+GitHub-Liste heraus angelegt worden, ohne die Historie zu pruefen.
+
+Der Fix ist Commit b933a5d (2026-08-09), released als 0.104 am selben Tag,
+sechs Wochen nach dem Report. Der Test war der Bug: t/20-integration.t uebergab
+MCP::Server::handle() ein rohes Hashref als Context; _handle_tools_list ruft
+darauf $context->has_scope. Seit b933a5d baut ctx() eine echte
+MCP::Server::Context-Instanz.
+
+Kein Codefehler in MCP::Run -- die Vermutung 'dieselbe Ursache wie
+Net::Async::MCP GH #1' im Ticketkopf traegt nur insoweit, als beide Dists denselben
+Testfehler machten, nicht als gemeinsamer Bibliotheksbug.
