@@ -1,0 +1,50 @@
+---
+class: standard
+created: 2026-08-24T00:20:02Z
+id: 38
+priority: high
+status: done
+tags:
+- release
+title: Release-Pfad gegen lokale Registry geprueft -- Auth-Header war kaputt
+updated: 2026-08-24T00:20:02Z
+---
+
+Geprueft 2026-08-24 auf Wunsch des Maintainers, bevor irgendetwas released
+wird. Aufbau: registry:2 unter localhost:5000, Push ueber den echten
+Client-Code des Plugins (build_image mit push => 1), nicht ueber dzil release.
+
+Erwartet hatte ich ein Problem mit dem vollen Image-Ref im Push-Pfad (wie beim
+Tag-Endpunkt, karr #37). Das war es NICHT -- die Engine nimmt den Ref im
+Pfadsegment klaglos. Gefunden wurde etwas Groesseres:
+
+  Docker API error (400): failed to parse "X-Registry-Auth" header
+  for /v1.41/images/localhost:5000/mcp-push-test:latest/push: unexpected EOF
+
+API::Docker baute den Header als base64url OHNE Padding ('$b64 =~ s/=+$//').
+Die Engine dekodiert mit Go's base64.URLEncoding, das Padding VERLANGT. Damit
+scheiterte JEDER Push -- mit Credentials wie anonym. Der anonyme Fall ist der
+sicherste Fehlschlag: '{}' sind drei Base64-Zeichen plus ein '='.
+
+Tragweite: 'dzil release' haette das Image gebaut, korrekt getaggt (seit #37)
+und dann jeden Push mit 400 quittiert -- als 'Warning:', nicht fatal. Das
+Release waere durchgelaufen und haette Erfolg gemeldet, ohne dass ein einziges
+Byte auf Docker Hub angekommen waere.
+
+Messung, nicht Herleitung:
+  vorher   3x 400, 'pushed' leer, Registry-Katalog leer
+  nachher  3x Erfolg, Katalog ["mcp-push-test"], Tags ["0","latest","0.107"]
+
+Der Fix liegt in p5-api-docker, Commit 66297d7, gepusht und lokal installiert.
+Der bestehende Test t/images_push_auth.t konnte das nicht finden: sein
+b64url_decode rechnete das fehlende Padding aus und haengte es an, bevor es
+dekodierte -- er reparierte den Defekt, den er pruefen sollte. Jetzt dekodiert
+er, was ueber die Leitung geht, und ein eigener Subtest nagelt 'e30=' fest.
+
+Testumgebung vollstaendig zurueckgebaut (Container, Images, das temporaere
+insecure-Drop-in unter ~/.config/containers/registries.conf.d/).
+
+Nebenbefund, nicht gefixt: Result->tags listet den ersten Tag nicht mit, weil
+der beim Build ueber die t-Option gesetzt wird und die Tag-Schleife ihn
+ueberspringt. Kosmetisch -- gepusht wird die vollstaendige Liste, wie die
+Messung oben zeigt.
