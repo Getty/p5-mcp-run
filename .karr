@@ -1,0 +1,11 @@
+# karr-foundation headless execution for p5-mcp-run.
+# The board lives in refs/karr/*; this marker opts the repo into agent drains.
+claude: true
+prompt: >
+  Work the local karr board for MCP::Run. Pick the highest-priority open ticket and
+  delegate all behavior-relevant code to the mcp-run-worker agent rather than editing
+  internals yourself. Verify with `prove -lr t/` (recursive; plain `prove -l t/` skips
+  subdir tests). Serialize karr mutations — collect results, then loop the board writes
+  sequentially. Never run `dzil release` or push to CPAN / Docker Hub, and never act on
+  a public GitHub/RT issue on your own initiative. Stop when nothing on the board is
+  actionable without a human decision.

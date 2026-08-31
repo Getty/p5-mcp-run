@@ -46,23 +46,20 @@ This rule depends on whether the Agent/Task tool is available to you.
 
 Behavior-relevant = runtime behavior, the MCP tool wire-format contract, IPC::Open3
 execution, the `allowed_commands` / `validator` gates, timeout handling, the compression
-pipeline, the hook's command-rewriting logic, Co-Authored-By handling, tests,
+pipeline, the hook (PostToolUse compression + PreToolUse Co-Authored-By), tests,
 performance. Pure prose docs and `Changes` notes are not.
 
 ## Coordination — karr board (always in scope)
 
 Ticket coordination is the orchestrating agent's job, so `karr` is always in scope —
-don't invoke the `kanban-issues-karr-cli` skill first, just use it. Git-native kanban; state lives in
-`refs/karr/*`; this repo is a single distribution — one board, no cross-repo handoff.
-Day-to-day: `karr list --compact` / `karr board` for open work; `karr show ID` for
-detail; `karr create/edit/move/handoff` for the usual workflow; mutating commands
-auto-sync, `karr sync --pull|--push` for explicit exchange. Use karr to record
-decisions worth solidifying, drift to reconcile, and follow-up work that should not
-block the current change. Full command surface: skill `kanban-issues-karr-cli`.
+don't invoke `kanban-issues-karr-cli` first, just use it. Git-native kanban, state in
+`refs/karr/*`; single distribution — one board, no cross-repo handoff. Use it to record
+decisions worth solidifying, drift to reconcile, and follow-up work that shouldn't block
+the current change. Full command surface: skill `kanban-issues-karr-cli`.
 
-**Serialize board mutations when fanning out.** Keep implementation work parallel if
-you like, but collect results and then loop `karr move`/`handoff`/`sync` sequentially
-— N of them landing at once is a resource event, not a cheap command.
+**Serialize board mutations when fanning out.** Keep implementation parallel if you like,
+but collect results and loop `karr move`/`handoff`/`sync` sequentially — N landing at
+once is a resource event, not a cheap command.
 
 ## Release — never without permission
 
@@ -74,44 +71,20 @@ toward release: stop and ask.
 
 ## Public issues — never act without instruction
 
-Two trackers, two universes. **karr** is the internal AI/agent work board (churned
-freely). **GitHub issues / CPAN RT** are the public tracker: real humans' reports,
-written under the maintainer's name. **Never act on a public issue on your own
-initiative — not even to read it.** No listing, viewing, commenting, editing,
-closing, or creating unless the user explicitly tells you to handle a specific
-public item. Incoming tickets are NOT a queue the agent drains.
+Two trackers, two universes. **karr** is the internal agent board (churned freely).
+**GitHub issues / CPAN RT** are the public tracker: real humans' reports under the
+maintainer's name. **Never act on a public issue on your own initiative — not even to
+read it.** No listing, viewing, commenting, editing, closing, or creating unless the
+user explicitly names a specific public item to handle. Incoming tickets are not a queue.
 
-## MCP-Run-specific hazards
+## MCP-Run-specific hazards — reference, don't restate
 
-Two products share one codebase but ship independently. Traps that will bite:
-
-- **`allowed_commands` is NOT a sandbox** — first-word match only. `allowed_commands =>
-  ['bash']` runs `bash -c 'rm -rf /'`. Don't widen the matcher silently; real sandboxing
-  is a feature, surface as a ticket.
-- **`working_directory` is `cd '$dir' && $command`** in lib/MCP/Run/Bash.pm, not chdir
-  + open3. Single-quote escaping lives there. Don't "refactor" without auditing callers.
-- **Two compression defaults, intentionally.** `bin/mcp-run-bash` ON; `MCP::Run` module
-  attribute OFF. Not drift — bin is user-facing default, module is library default.
-  Do not align.
-- **Compression happens in PostToolUse, not by rewriting the command.** `--install-claude`
-  registers two hooks: PreToolUse for the Co-Authored-By transform and the `no-compress`
-  marker, PostToolUse for the compression itself. `--b64` and `--filter-files` are gone,
-  and with them the hardcoded 1800s timeout and the docker pipe snippet.
-- **Three limits, all deliberate, all documented in the POD.** A command that exits
-  non-zero is not compressed at all — the harness fires PostToolUseFailure there and
-  ignores `updatedToolOutput` (karr #24). Background commands have no output yet when the
-  hook runs. Two PostToolUse hooks do not chain: each sees the original response and the
-  last one to answer wins, silently.
-- **Hook does NOT enforce permissions.** It annotates output and adds a trailer.
-  Permission is Claude Code's job. Permission logic in the hook = layering violation.
-  This is also why the `no-compress` marker is appended rather than prepended: the first
-  word of a command is what Claude Code matches permission rules against.
-- **`format_result($tool, $result, $compress, $command)`:** overriding subclasses MUST
-  thread `$command` through — command-specific filters only match when they see it.
-- **`transform_command` (Co-Authored-By) ≠ `compress()` (output filtering)** — different
-  functions, different inputs. Do not merge.
-- **`MCP_RUN_COMPRESS_NO_CO_AUTHORED` ≠ `CO_AUTHORED_BY`** — first disables, second
-  replaces. Not aliases.
+Two products share one codebase but ship independently. The traps that follow (the
+`allowed_commands` non-sandbox, `working_directory` as `cd '$dir' && ...`, the two
+intentional compression defaults, PostToolUse compression, the hook's no-permission
+rule, `format_result` threading `$command`) are the single source of truth in skill
+`mcp-run-core`, briefed into every `mcp-run-*` agent. The orchestrating agent delegates
+behaviour-relevant work to them; don't restate them here.
 
 ## Perl specifics — reference, don't restate
 

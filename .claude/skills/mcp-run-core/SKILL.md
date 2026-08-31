@@ -12,8 +12,10 @@ MCP-Run bietet zwei Produkte aus einer Codebase:
 1. **`mcp-run-bash`** (primär) — stdio MCP-Server mit einem `run`-Tool, das
    Shell-Commands via `bash -c` ausführt und mit 30+ command-spezifischen
    Filtern komprimierte Ausgabe liefert.
-2. **`mcp-run-compress`** (Bonus) — Claude Code PreToolUse Hook, der dieselbe
-   Compression-Pipeline auf das eingebaute Bash-Tool von Claude Code anwendet.
+2. **`mcp-run-compress`** (Bonus) — Claude Code Hook, der dieselbe
+   Compression-Pipeline auf das eingebaute Bash-Tool von Claude Code anwendet. Die
+   Compression läuft in **PostToolUse**; PreToolUse macht nur Co-Authored-By und den
+   `no-compress`-Marker.
 
 ## Vocabulary
 
@@ -31,7 +33,7 @@ MCP-Run bietet zwei Produkte aus einer Codebase:
 
 ```
 bin/mcp-run-bash       # Stdio MCP Server, primär
-bin/mcp-run-compress   # PreToolUse Hook + Installer, Bonus
+bin/mcp-run-compress   # Pre+PostToolUse Hook + Installer, Bonus (Compression in PostToolUse)
 lib/MCP/Run.pm         # Basis-Server, registriert das `run`-Tool
 lib/MCP/Run/Bash.pm    # bash -c via IPC::Open3
 lib/MCP/Run/Compress.pm        # Filter-Pipeline + 30+ command-Filter

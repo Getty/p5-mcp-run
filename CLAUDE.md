@@ -193,20 +193,13 @@ mit (Dev-Loop `prove -lr t/` unberührt).
 
 ## Sharp Edges (für Entwickler)
 
-- `allowed_commands` prüft nur das erste Wort der raw command (lib/MCP/Run.pm) — kein Sandbox
-- `working_directory` wird durch `cd '$dir' && ...` implementiert (lib/MCP/Run/Bash.pm), nicht chdir/open3
-- Der Byte-Deckel der ersetzten Ausgabe ist `MCP_RUN_COMPRESS_MAX_BYTES` (Default 29000, bin/mcp-run-compress). Er muss unter dem ~30000-Deckel des Harness bleiben: darüber persistiert der Harness die *Ersetzung* und zeigt dem Modell 2 KB Preview — schlechter als gar nicht komprimieren. Greift nur, wenn eine Rohdatei existiert, auf die der Text verweisen kann; ohne sie wäre ein Schnitt endgültiger Verlust
-- Hook schreibt nur die Bash command um, trifft keine Permission-Entscheidungen
-- `transform_command` (Co-Authored-By) und `compress()` (Output-Filtering) sind verwandt aber unterschiedlich
-- `mcp-run-bash` compression default ist AN (bin/mcp-run-bash), Modul-Attribut ist AUS (lib/MCP/Run.pm)
-- `format_result($tool, $result, $compress, $command)` — bei Override in Subclasses muss der `$command` für command-spezifische Filter durchgereicht werden
-- **MCP >= 0.15 erforderlich** (cpanfile-Pin). Ab 0.15 ist die Protocol-Revision Teil *jedes* Requests: `params._meta` muss `protocolVersion` und `clientCapabilities` tragen, sonst weist `MCP::Server::_check_meta` vor dem Dispatch mit `Missing protocol version` ab. Wer im Test einen nackten `MCP::Server::Context` baut, umgeht den Transport und landet im modernen Pfad — dann fallen scheinbar unabhängige Subtests gleichzeitig um. `initialize` heisst dort `server/discover`, `serverInfo` liegt in `result._meta`
-- Echte stdio-Clients laufen weiter über `MCP::Server::Legacy` (klassischer `initialize`-Handshake, `_check_meta` übersprungen). MCP nennt den Pfad im Quelltext "temporary", aber er ist in 0.15 vorhanden, und **MCP 0.15 ist das Requirement** — was damit läuft, ist kein Bug (karr #7, entschieden 2026-08-15). Kein Shim, keine Obergrenze im cpanfile. Die Frühwarnung ist `t/50-bash-bin.t`: er fährt den klassischen Handshake und wird rot, sobald ein künftiges MCP den Pfad entfernt — erst dann ist die Frage neu zu stellen, und genau deshalb darf dieser Test nicht auf den modernen Pfad umgestellt werden
-- `MCP::Server::Legacy` **verhandelt keine Revision**: es liest `protocolVersion` zwar, verwirft aber nichts — passt der String nicht, antwortet es mit `$VERSIONS[-1]`. Jeder beliebige Versionsstring passiert. Echte Revisionsprüfung gibt es nur im modernen Pfad über `_check_meta` (`t/20-integration.t`, Subtest "protocol contract")
-- `MCP::Run::Compress` wird in lib/MCP/Run.pm **zur Compile-Zeit** geladen, obwohl `_get_compressor` den Compressor lazy konstruiert. Absicht: ein fehlendes/kaputtes Compress-Modul soll den Server beim Start umbringen, nicht beim ersten `tools/call` des Nutzers. Das `use` nicht in ein `require` im Lazy-Loader zurückbauen
-- **Umgekehrt bei `bin/mcp-run-compress`: der Hook lädt seine Module zur Laufzeit und ist fail-open.** Das ist kein Widerspruch zum Punkt darüber, sondern die andere Seite derselben Überlegung. Der Server darf beim Start sterben, weil ein Client das merkt und niemand sonst betroffen ist. Der Hook sitzt im kritischen Pfad des Bash-Tools: stirbt er, ist Exit 2 für Claude Code kein Fehler, sondern *„Tool-Call blockieren"* — eine halb kaputte Perl-Installation legt dann jede Bash-Command in jeder Session still. Er gibt deshalb bei jedem Ladefehler die Pass-Through-Antwort und Exit 0 zurück, mit einer Zeile auf stderr — auf beiden Events. Die beiden Defaults NICHT angleichen.
-- Nicht fail-open, und das mit Absicht: `--install-claude` — ein Installer, der still nichts tut, ist schlimmer als einer, der scheitert
-- `serverInfo`-Identität (`mcp-run-bash`/`$VERSION`) liegt als Klassen-Default in lib/MCP/Run/Bash.pm, nicht in `bin/` — damit Library-Nutzer sie mitbekommen. Mojo::Base-Mechanik: skill `perl-mojo`
+Die Entwickler-Invarianten und Fallen (kein-Sandbox `allowed_commands`,
+`working_directory` als `cd '$dir' && ...`, der Byte-Deckel, PostToolUse-Compression und
+die Permission-Grenze des Hooks, die zwei intentionalen Compression-Defaults,
+`format_result`-Threading, MCP >= 0.15 und der `MCP::Server::Legacy`-Pfad, das
+Compile-Zeit-`use` von `MCP::Run::Compress`, `serverInfo`-Identität) sind die einzige
+Quelle der Wahrheit in skill `mcp-run-core` — in jeden `mcp-run-*` Agenten gebrieft.
+Nicht hier duplizieren; für Details dorthin.
 
 ## Weitere Runner-Ideen
 
