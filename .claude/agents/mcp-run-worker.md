@@ -2,7 +2,6 @@
 name: mcp-run-worker
 description: "Default mcp-run worker — implement, refactor, debug, and test code in this distribution. Pre-loaded with mcp-run architecture (mcp-run-bash server, mcp-run-compress hook, IPC::Open3 execution, compression pipeline) and all Getty Perl conventions. Leaves a commit-ready tree; never commits — commits belong to mcp-run-release-manager."
 model: inherit
-allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
     - mcp-run-core
