@@ -3,7 +3,28 @@ use warnings;
 use Test::More;
 use Path::Tiny qw( tempdir );
 
+use Time::HiRes qw( sleep time );
+
 use MCP::Run::Bash;
+
+# Event-driven waiting instead of fixed sleeps: a fixed pause is a guess about
+# how long the machine takes, and loading Bash.pm in a fresh perl alone took
+# 2.3s under load. Poll for the event itself, with a generous deadline that only
+# a real failure ever reaches (karr #43).
+sub wait_until {
+  my ( $what, $deadline, $check ) = @_;
+  my $end = time + $deadline;
+  until ( $check->() ) {
+    return 0 if time > $end;
+    sleep 0.02;
+  }
+  return 1;
+}
+
+sub tick_size { my $f = shift; return -s "$f" // 0 }
+
+# True while anything is left in the process group $pgid.
+sub group_alive { my $pgid = shift; return kill 0, -$pgid }
 
 # The identity defaults live on the class, not in bin/mcp-run-bash, so that
 # library users of MCP::Run::Bash are not announced as MCP::Server's
@@ -242,14 +263,19 @@ subtest 'a timeout kills the process group, not just bash' => sub {
   # appending to a file we can watch.
   my $result = $server->execute(
     "( while :; do echo tick >> '$tick'; sleep 0.1; done ) & echo \$! > '$pidfile'; wait",
-    undef, 1,
+    undef, 3,
   );
   is $result->{exit_code}, 124, 'the command timed out';
 
-  my $ticks = -s "$tick";
-  ok $ticks, 'the grandchild was running while the command ran';
-  sleep 1;
-  is -s "$tick", $ticks, 'the grandchild stopped working when the command timed out';
+  ok tick_size($tick), 'the grandchild was running while the command ran';
+  my $pgid = $pidfile->exists ? $pidfile->slurp : '';
+  chomp $pgid;
+  # $! is the background subshell, not the group leader: watch that pid.
+  ok $pgid =~ /^\d+$/ && wait_until( 'grandchild gone', 60, sub { !kill 0, $pgid } ),
+    'the grandchild stopped working when the command timed out';
+  my $ticks = tick_size($tick);
+  sleep 0.3;
+  is tick_size($tick), $ticks, 'and it stays stopped';
 
   # Do not leave a busy loop behind when this test fails.
   my $orphan = $pidfile->exists ? $pidfile->slurp : '';
@@ -367,17 +393,23 @@ subtest 'terminating the caller takes the command with it' => sub {
     plan skip_all => "cannot fork a caller process: $!";
     return;
   }
-  sleep 1;
-  ok -s "$tick", 'the command is running';
+  ok wait_until( 'command running', 60, sub { tick_size($tick) } ), 'the command is running';
 
   kill 'TERM', $pid;
   close $caller_out;    # reaps the caller
 
-  my $ticks = -s "$tick";
-  sleep 1;
-  is -s "$tick", $ticks, 'the command stopped when its caller was terminated';
-
   my $orphan = $pidfile->exists ? $pidfile->slurp : '';
+  chomp $orphan;
+  my $pgid = $orphan =~ /^\d+$/ ? $orphan : 0;
+  ok $pgid && wait_until( 'group gone', 60, sub { !group_alive($pgid) } ),
+    'the command stopped when its caller was terminated';
+
+  # Nothing is left in the group, so nothing can still be writing.
+  my $ticks = tick_size($tick);
+  sleep 0.3;
+  is tick_size($tick), $ticks, 'and it stays stopped';
+
+  $orphan = $pidfile->exists ? $pidfile->slurp : '';
   chomp $orphan;
   if ($orphan =~ /^\d+$/ && kill 0, $orphan) { kill 'KILL', -$orphan or kill 'KILL', $orphan }
 };
