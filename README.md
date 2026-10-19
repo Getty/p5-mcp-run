@@ -124,7 +124,10 @@ it adds the missing hook and replaces entries that name the removed flags.
   `PostToolUseFailure` there instead, and that event ignores any
   replacement output. This is the one place the old rewrite did better,
   and it is the noisiest output there is — a failing build. There is no
-  known way around it from a hook.
+  known way around it from a hook. The MCP server is not affected by
+  this: it produces the output itself and compresses it whether the
+  command succeeded or failed, with the same command-specific filters it
+  applies to a successful command.
 - **Background commands** (`run_in_background`) have produced no output
   yet when the hook runs, so they pass through untouched.
 - **Two PostToolUse hooks do not chain.** Each one is handed the original
