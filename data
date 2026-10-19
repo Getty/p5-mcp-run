@@ -1,0 +1,96 @@
+---
+class: standard
+completed: 2026-10-19T21:30:01Z
+created: 2026-08-15T07:49:17Z
+id: 24
+priority: medium
+started: 2026-10-19T20:33:04Z
+status: done
+title: PostToolUse komprimiert fehlgeschlagene Commands nicht
+updated: 2026-10-19T21:30:11Z
+---
+
+Bekannte, bewusst in Kauf genommene Grenze des Umbaus aus #9. Gemessen
+Session 0a4d56b3 bzw. 325827e5, 2026-08-15.
+
+Bei Exit != 0 feuert nicht PostToolUse, sondern PostToolUseFailure. Verifiziert:
+ein Command mit 'exit 3' bekam keinen Sonden-Header, ein identischer mit
+'exit 0' schon. Im Failure-Payload gibt es kein tool_response, nur einen
+error-String und is_interrupt, und updatedToolOutput wird ignoriert -- in #9
+in vier Varianten durchgetestet. Durch kommt nur additionalContext, und das
+ERSETZT nichts, spart also keinen einzigen Token.
+
+Folge: seit dem Umbau bleibt die Ausgabe fehlgeschlagener Commands
+unkomprimiert. Das ist ein Rueckschritt gegenueber dem PreToolUse-Rewrite, der
+sie mitkomprimierte, weil er innerhalb der Ausfuehrung arbeitete. Und es trifft
+ausgerechnet den lautesten Fall: ein fehlgeschlagener Build, eine rote
+Testsuite, ein Compiler mit hundert Warnungen.
+
+Warum trotzdem so entschieden: der Umbau gewinnt an jeder anderen Stelle
+(kein Eingriff in die Command, kein 1800s-Timeout, keine Temp-Dateien, im
+Docker-Modus faellt das ganze Host-Snippet samt der Fehlerklasse aus #11 weg).
+Der Maintainer hat den Umbau ausdruecklich beauftragt, in Kenntnis dieser
+Grenze.
+
+Was fehlt, ist ein Weg zurueck fuer den Fehlerfall. Keine der bisher geprueften
+Formen traegt. Denkbare Richtungen, keine davon geprueft:
+ - Ein Weg, PostToolUse auch bei Exit != 0 auszuloesen (Harness-seitig, nicht in
+   unserer Hand -- waere eine Anfrage an Claude Code).
+ - Ein sehr schlanker PreToolUse-Rewrite, der NUR bei Commands greift, deren
+   Fehlschlag wahrscheinlich und deren Ausgabe erfahrungsgemaess laut ist
+   (make, cargo, prove, npm test). Zwei Compressionswege gleichzeitig sind
+   aber genau die Vermengung, die die Hausregeln verbieten -- das braeuchte
+   eine sehr gute Begruendung.
+ - Akzeptieren und dokumentieren. Aktueller Stand.
+
+Nicht anfassen, solange #9 nicht steht.
+Nachtrag 2026-08-15, Session 51a6d83e: Richtung 2 ist geprueft und tot.
+
+Der Spike unter ~/.claude/spike-mcp-run/permcheck (Lauf 2, V2 ohne base64)
+misst, ob Claude Code seine deny-Regeln VOR oder NACH dem PreToolUse-Rewrite
+prueft. Aufbau: deny-Regel liegt auf spike-perm-target, der Hook schreibt um
+auf spike-perm-allowed, das nicht gesperrt ist.
+
+  A  spike-perm-target control   unveraendert  -> GEBLOCKT    (Regel greift)
+  B  spike-perm-allowed sanity   unveraendert  -> lief durch  (Ziel erreichbar)
+  C  spike-perm-target rewrite   umgeschrieben -> LIEF DURCH
+
+Wortlaut A: "Permission to use Bash with command spike-perm-target control has
+been denied." Das ist die regulaere Permission-Ablehnung mit Kommandotext,
+nicht das "Blocked by classifier" aus Lauf 1 -- die deny-Regel wurde also
+tatsaechlich ausgewertet. Heartbeat: Hook lief, permission_mode=default
+(check.sh nimmt manual|default als den klassischen Regel-Modus). Das Rewrite
+ist im Log belegt: seq=2, spike-perm-target rewrite -> spike-perm-allowed
+rewrite. Fall B, der in Lauf 1 fehlte, schliesst aus, dass C an einem kaputten
+oder ebenfalls gesperrten Ziel scheitert.
+
+ERGEBNIS: Die Regeln sehen das REWRITE, nicht das Original. Ein
+PreToolUse-Rewrite haengt jede deny-Regel des Nutzers aus.
+
+Damit faellt Richtung 2 nicht an der Hausregel gegen zwei parallele
+Compressionswege, sondern an etwas Schwererem: der Hook wuerde die
+Permission-Schicht nicht umgehen, sondern fuer jeden umgeschriebenen Command
+aufheben. Fuer ein oeffentliches Produkt disqualifiziert, und zwar unabhaengig
+davon, wie schmal man den Rewrite zuschneidet -- auch einer, der nur bei
+make/cargo/prove/npm test greift, greift dort eben permission-aushebelnd. Das
+ist kein Begruendungsproblem mehr, sondern ein Ausschlusskriterium.
+
+Bleiben Richtung 1 (Harness-seitig, waere eine Anfrage an Claude Code) und
+Richtung 3 (akzeptieren und dokumentieren, aktueller Stand). Der Spike wird
+nach dieser Messung zurueckgebaut (uninstall.sh).
+
+2026-10-19 21:11 Befund zur Frage, wo der Fehlertext entsteht: die beiden Produkte erzeugen ihn an zwei verschiedenen Stellen. Das MCP-Produkt erzeugt ihn selbst - MCP::Run::Bash::execute liefert stdout/stderr/Exit-Code, MCP::Run::format_result baut daraus den Text und setzt isError. Dort ist Kompression moeglich, und sie passiert auch: gemessen mit einem fehlgeschlagenen ls -la (Exit 3, 20 Dateien) ergab isError=1, der ls-Filter lief (Rechte-Spalte weg), der stderr-Fehlertext blieb erhalten. Der Hook erzeugt den Fehlertext nicht, er bekommt ihn nicht einmal: bei Exit != 0 feuert PostToolUseFailure, und der Installer registriert nur PreToolUse und PostToolUse - im Fehlerfall laeuft der Hook also gar nicht.
+
+2026-10-19 21:11 Gemessen, welche Hebel die Dist im Fehlerfall hat. Hebel 1: den Hook fuer PostToolUseFailure registrieren. Der Hook beantwortet ein solches Payload mit einem reinen Pass-Through und fasst den Fehlerstring nicht an - auch dann nicht, wenn der Fehlerstring die volle Ausgabe enthaelt (zweites Payload mit Ausgabe im Fehlerstring: identische Antwort). Hebel 2: den Fehlerstring als additionalContext zurueckgeben. Das ist die einzige Antwort, die dieses Event annimmt, und sie ist additiv: an einer 22199-Byte-Fehlerausgabe (300 Compiler-Warnungen plus make-Fehler) ist die komprimierte Fassung 3595 Bytes, das Modell saehe roh plus komprimiert also 25794 Bytes, Delta plus 3595. Es spart keinen Token, es kostet einen. Der Fehlerfall ist damit innerhalb der Dist nicht schliessbar.
+
+2026-10-19 21:11 Richtung 2 (schlanker PreToolUse-Rewrite fuer wahrscheinlich fehlschlagende Commands) bleibt tot - mit zwei zusaetzlich messbaren Gruenden ueber die bereits gemessene Permission-Aushebung hinaus. Erstens gibt es im Docker-Modus auf dem Host keinen Compressor, in den man die Ausgabe pipen koennte: der Hook laeuft im Container, das Kommando auf dem Host. Zweitens ist der Exit-Status einer Pipeline der des letzten Glieds; der Status des fehlgeschlagenen Kommandos gaenge nur ueber pipefail oder einen zusammengesetzten Befehl, und beides aendert die Kommandooberflaeche, an der die Permission-Regeln matchen. Ein Rewrite, der den Exit-Status verliert, macht ausserdem genau das, was hier nicht passieren darf: er laesst einen roten Build als gruenen durchgehen und versteckt damit die Messung.
+
+2026-10-19 21:11 Empfehlung: Richtung 1, eine Anfrage an Claude Code, mit genau dieser Praezisierung - PostToolUse soll auch fuer Befehle mit Exit != 0 feuern und dasselbe tool_response liefern; alternativ soll PostToolUseFailure die Ausgabe mitbringen und updatedToolOutput auswerten. Dann greift der bestehende PostToolUse-Pfad des Hooks unveraendert, und die Aenderung in der Dist waere eine Zeile in der Event-Liste. Das ist eine Produktentscheidung, keine Implementierung, deshalb hier nur der Befund. Antwort mit einem Buchstaben genuegt: 1 = Harness-Anfrage so stellen, 3 = akzeptieren und die Doku unveraendert lassen.
+
+2026-10-19 21:12 In der Dist geaendert: README.md. Der Limit-Bullet sagt jetzt, dass die Grenze den Hook betrifft und nicht die Distribution: der MCP-Server komprimiert fehlgeschlagene Commands mit denselben command-spezifischen Filtern wie erfolgreiche. Das ist der Weg zurueck, den es heute gibt - ein fehlgeschlagener Build ueber mcp-run-bash laeuft komprimiert an. Die Grenze selbst ist seit 0.107 dokumentiert (bin-POD LIMITS, README 'Three things it does not do'); ergaenzt wurde nur die Abgrenzung, plus die Messung, dass der Hook im Fehlerfall gar nicht laeuft und dass additionalContext additiv ist.
+
+2026-10-19 21:12 Kein Code-Fix moeglich, Befund mit Messung und Empfehlung geliefert. Gemessen: im MCP-Produkt wird der Fehlertext von der Dist selbst erzeugt und auch bei Exit != 0 komprimiert (ls-Filter lief, isError gesetzt, stderr erhalten); im Hook-Produkt erzeugt der Harness den Fehlertext, der Hook laeuft bei Exit != 0 gar nicht (nur PreToolUse und PostToolUse registriert) und der einzige Hebel des Failure-Events, additionalContext, ist additiv (22199 Byte Fehlerausgabe, komprimiert 3595 Byte, Delta plus 3595). Richtung 2 bleibt tot, zusaetzlich belegt: im Docker-Modus fehlt auf dem Host ein Compressor zum Pipen, und der Exit-Status einer Pipeline braucht pipefail, was die Permission-Oberflaeche aendert. Empfehlung: Richtung 1 mit der Praezisierung 'PostToolUse feuert auch bei Exit != 0 mit demselben tool_response' - dann waere die Dist-Aenderung eine Zeile in der Event-Liste. Antwort mit einem Buchstaben genuegt (1 = Harness-Anfrage, 3 = akzeptieren). Geaendert: README.md, der Limit-Bullet grenzt die Grenze auf den Hook ab und nennt den Weg zurueck ueber mcp-run-bash.
+
+Erledigt mit Entscheidung 3 (akzeptieren und dokumentieren); Befund und Messung liegen auf der Karte, README.md ist angepasst (Commit 56de4f9 auf local main). Richtung 1 bleibt als Option fuer den Maintainer offen.
+
+2026-10-19 21:30 Koordinator-Entscheidung 2026-10-19: 3 (akzeptieren und dokumentieren). Begruendung: die Messung zeigt, dass die Grenze im Hook-Produkt liegt und nicht in der Dist - der MCP-Server komprimiert fehlgeschlagene Commands bereits (isError=1, ls-Filter lief, stderr erhalten), und der Hook laeuft bei Exit != 0 gar nicht (nur PreToolUse und PostToolUse registriert). Die Karte nennt 'akzeptieren und dokumentieren' selbst als aktuellen Stand, und der Maintainer hat den Umbau in Kenntnis dieser Grenze beauftragt. Umgesetzt: README.md grenzt die Grenze auf den Hook ab und nennt den Weg zurueck (mcp-run-bash komprimiert auch rote Builds). Richtung 1 (Harness-Anfrage an Claude Code: PostToolUse feuert auch bei Exit != 0 mit demselben tool_response) bleibt als Option offen und ist eine Entscheidung des Maintainers - die Dist-Aenderung waere dann eine Zeile in der Event-Liste. Commit 56de4f9 auf local main (ff von feature/k41-k40-k36-k39-k24), Suite prove -lr t/ -> 11 Dateien, 142 Tests PASS. Kein Push.
