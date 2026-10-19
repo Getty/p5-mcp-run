@@ -13,7 +13,7 @@ use Mojo::Base 'MCP::Run', -signatures;
         working_directory => '/var/data',
         timeout           => 30,
     );
-    $server->run;
+    $server->to_stdio;
 
 =head1 DESCRIPTION
 

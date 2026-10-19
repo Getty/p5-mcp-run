@@ -1,6 +1,13 @@
 Revision history for MCP-Run
 
 {{$NEXT}}
+  - Fix the SYNOPSIS of `MCP::Run::Bash`: it called `$server->run`, a
+    method that exists neither in `MCP::Run::Bash` nor in `MCP::Run` nor
+    in `MCP::Server`, so the first line a reader copied died at runtime
+    with "Can't locate object method". The example calls
+    `$server->to_stdio` now, and a new test, `t/07-pod.t`, checks that
+    every method call in the SYNOPSIS of `MCP::Run` and `MCP::Run::Bash`
+    exists.
   - Remove `test_ci.txt` from the distribution. The file was tracked in
     git and therefore shipped in the CPAN tarball, where it says
     nothing.
