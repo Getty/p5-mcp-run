@@ -1,0 +1,40 @@
+---
+class: standard
+completed: 2026-10-19T21:29:27Z
+created: 2026-08-23T20:20:26Z
+id: 36
+priority: low
+started: 2026-10-19T20:33:09Z
+status: done
+tags:
+- portability
+title: ls-Filter matcht --time-style-Datumsformate nicht
+updated: 2026-10-19T21:29:27Z
+---
+
+Bestandsproblem, gefunden beim Fix von GH #3 / karr #35, dort bewusst nicht
+mitgenommen und im GitHub-Kommentar offengelegt.
+
+Die transform-Regex des ls-Filters erwartet das Standard-Datumsformat von
+`ls -l`:
+
+  \w+\s+\d+\s+[\d:]+     # 'Aug 14 08:44' oder 'Mar 12  2024'
+
+Mit `--time-style=long-iso` liefert ls stattdessen '2026-08-23 10:00', mit
+--full-iso noch mehr. Beides matcht nicht; die Zeile bleibt ungekuerzt stehen.
+Gleicher Mechanismus wie #35: der Filter erkennt das Listing (output_detect
+greift ueber .*), kollabiert aber keine Zeile.
+
+Anders als #35 trifft das niemanden ungefragt -- es braucht ein explizites
+--time-style oder ein TIME_STYLE in der Umgebung. Deshalb low.
+
+Wer das angeht: die Datumsfelder als Alternation fassen, nicht die Regex
+weiter aufweichen. Und einen Fall pro Format in den bestehenden Subtest
+'ls long listing: access-method suffixes and every file type' in t/compress.t
+haengen, der ist dafuer schon gebaut.
+
+2026-10-19 20:49 Ursache: die transform-Regex des ls-Filters kannte nur das Locale-Datumsformat (\\w+\\s+\\d+\\s+[\\d:]+). output_detect griff zwar (das Listing wurde erkannt), aber keine Zeile wurde kollabiert. Fix: das Datumsfeld ist jetzt eine Alternation ueber ganze Formate, nicht eine aufgeweitere Einzel-Regex: locale (Mon DD HH:MM bzw. Mon DD YYYY), iso (MM-DD HH:MM), long-iso (JJJJ-MM-TT HH:MM), full-iso (JJJJ-MM-TT HH:MM:SS.NNNNNNNNN +ZZZZ) und das Datum allein (JJJJ-MM-TT, z. B. +%Y-%m-%d). Die Zeit verlangt zwingend einen Doppelpunkt, sonst frisst sie Dateinamen - das haelt die Alternation von einem zu weiten Muster fern. Verifikation: 4 neue Faelle im bestehenden Subtest, zuerst rot (4 von 18 fehlgeschlagen, Zeilen blieben unveraendert), dann gruen; zusaetzlich mit echtem ls (coreutils 9.7) geprueft: alle fuenf Stile kollabieren, inklusive Dateiname mit Leerzeichen und Symlink mit Ziel.
+
+2026-10-19 20:49 Erledigt: die Datumsfelder des ls-Filters sind eine Alternation ueber die ganzen Formate (locale, iso, long-iso, full-iso, JJJJ-MM-TT allein) statt eines aufgeweiterten Musters. 4 neue Testfaelle im Subtest ls long listing (zuerst rot, dann gruen); gegen echtes ls aus coreutils 9.7 nachgemessen. Filters.pm dokumentiert die erkannten Formate und die Grenze (fremde strftime-Formate bleiben uncollapsed).
+
+Koordinator: umgesetzt, verifiziert und committed. Suite: prove -lr t/ -> 11 Dateien, 142 Tests PASS (91 s). Die neuen Tests sind rot gegen das alte lib/ (Verhaltensfehler, kein Ladefehler). Commits 997fd67 (k41), 4651efb (k40), b21e4bd (k36), 2db0773 (k39) auf feature/k41-k40-k36-k39-k24, per --ff-only auf local main geholt (main = 56de4f9). Kein Push.
