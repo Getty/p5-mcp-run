@@ -1,6 +1,13 @@
 Revision history for MCP-Run
 
 {{$NEXT}}
+  - Stop the command's process group even when the calling program has
+    installed a handler of its own for `SIGHUP`, `SIGINT` or `SIGTERM`.
+    The signal is taken over for the duration of the command, the group
+    is stopped, and the program's own handler is chained afterwards: the
+    program still gets the signal it was sent, and the command no
+    longer outlives the run. A signal the program ignores is left
+    alone, as before.
   - Recognise the date column of `ls --time-style=` in every shape it
     produces: the locale default, `iso`, `long-iso`, `full-iso` and the
     date alone. The filter matches the date forms as alternatives

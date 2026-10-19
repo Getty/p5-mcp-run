@@ -34,6 +34,13 @@ group is sent C<SIGTERM>, escalated to C<SIGKILL> if it is still alive after
 a two second grace period, and the exit code is set to C<124> (matching the
 convention used by GNU C<timeout(1)>).
 
+The same group is stopped when the program running the command is signalled:
+C<SIGHUP>, C<SIGINT> and C<SIGTERM> are taken over for the duration of the
+command, the group is sent C<SIGTERM> and then C<SIGKILL>, and the signal is
+handed on afterwards to whoever was going to receive it. A program that
+installed a handler of its own keeps it, and it runs once the command is
+gone. A signal the program ignores is left alone, program and command alike.
+
 A command killed by a signal reports C<128 + signal number>, the same
 convention a shell uses: a build killed by the OOM killer comes back as
 C<137>, not as a successful C<0>.
@@ -132,14 +139,42 @@ sub execute ($self, $command, $working_directory, $timeout) {
     my $timed_out = 0;
 
     # The command has its own process group now, so a group kill aimed at us
-    # no longer reaches it. Forward the termination signals ourselves, or a
-    # cancelled run would leave the command behind after we are gone. Signals
-    # the embedding program handles or ignores itself are left alone: how a
-    # Mojo server shuts down is its decision, not ours.
-    my @forward = grep { _signal_unclaimed($_) } qw(HUP INT TERM);
+    # no longer reaches it. Take the termination signals over for the
+    # duration of the command, or a cancelled run would leave the command
+    # behind after we are gone.
+    #
+    # Taking a signal over no longer stops at a signal the embedding program
+    # has taken over itself. The command is stopped either way - a command
+    # that outlives the run leaves work behind that nobody asked for - and
+    # the signal is handed on afterwards, to the program's own handler,
+    # chained once the command is gone. How the program shuts down is its
+    # business; that the command does not outlive the run is ours.
+    #
+    # A signal the program ignores is left alone, program and command
+    # alike: it asked for the signal to have no effect, and the command
+    # inherits that disposition across the exec.
+    my @forward = grep { !_signal_ignored($_) } qw(HUP INT TERM);
+    my %previous = map { $_ => $SIG{$_} } @forward;
+    my $child_status;
     local @SIG{@forward} = map {
       my $signal = $_;
-      sub { _terminate($pid); $SIG{$signal} = 'DEFAULT'; kill $signal, $$ };
+      sub {
+        # The timeout alarm must not abort the cleanup: a die from here
+        # would skip the chaining and swallow the signal the program was
+        # sent. The command is dead after this anyway, so the timeout has
+        # nothing left to guard.
+        local $SIG{ALRM} = sub { };
+
+        # $? is global: a waitpid in here overwrites the status the main
+        # flow is about to read. Keep it, and put it back unless this
+        # handler reaped the child itself.
+        my $saved = $?;
+        my $status = _terminate($pid);
+        if (defined $status) { $child_status = $status }
+        else                 { $? = $saved }
+
+        _chain_signal($signal, $previous{$signal});
+      };
     } @forward;
 
     local $SIG{ALRM} = sub { $timed_out = 1; die "alarm\n" };
@@ -177,8 +212,14 @@ sub execute ($self, $command, $working_directory, $timeout) {
       # and keeps running - 'exec >/dev/null 2>&1; sleep 300' - reaches this
       # point immediately, and an unguarded waitpid would let it outrun its
       # timeout by as much as it liked.
-      waitpid($pid, 0);
-      $status = $?;
+      my $reaped = waitpid($pid, 0);
+      $status = $reaped > 0 ? $? : $child_status;
+
+      # A signal handler may have reaped the child already, in which case
+      # the wait above finds nothing and the status was recorded there. If
+      # nobody reaped it at all, the wait status is all there is - and it
+      # says the child was not ours.
+      $status = $? unless defined $status;
     };
 
     alarm(0);
@@ -258,11 +299,23 @@ signal reports C<128 + signal number> (C<137> for C<SIGKILL>, C<143> for
 C<SIGTERM>), so a signalled command is never mistaken for a successful one.
 
 While a command runs, C<SIGHUP>, C<SIGINT> and C<SIGTERM> are stopped on the
-way past: the command is killed first and the signal is then re-raised with
-its default action. Without that, a kill aimed at the process calling
-C<execute> would leave the command running in its own process group. A signal
-the calling program handles or ignores itself is left untouched - cleaning up
-after the command is then the caller's business.
+way past: the command is killed first, and the signal then continues on its
+way. Without that, a kill aimed at the process calling C<execute> would leave
+the command running in its own process group.
+
+The signal continues as the calling program had it: a handler of its own is
+chained, after the command is gone, so the program can still do what it meant
+to do when the signal arrived; a default disposition is re-raised, so the
+signal keeps the effect it usually has. What becomes of the program is the
+program's business. That the command does not outlive the run is not: a
+command that keeps running after the signal leaves work behind that nobody
+asked for.
+
+A signal the calling program ignores is left alone, in the program and in the
+command alike: the program asked for the signal to have no effect, and the
+command inherits the disposition across the exec. That is the one case in
+which a command can outlive the signal that was aimed at the program running
+it.
 
 Returns a hashref with keys C<exit_code>, C<stdout>, C<stderr>, and
 optionally C<error>.
@@ -275,21 +328,39 @@ children running. Both are reported as C<124> like any other timeout.
 
 =cut
 
-# Stop a timed out or cancelled command: SIGTERM the group, then SIGKILL it
-# if the grace period passes without the child being reaped.
+# Stop a timed out, cancelled or interrupted command: SIGTERM the group, then
+# SIGKILL it if the grace period passes without the child being reaped.
+# Returns the child's status if this call reaped it, and undef if the child
+# was never there to reap - only the reaper gets to see the status.
 sub _terminate ($pid) {
   _signal_group($pid, 'TERM');
-  return 1 if _reap_within_grace($pid);
+  my $status = _reap_within_grace($pid);
+  return $status if defined $status;
   _signal_group($pid, 'KILL');
-  waitpid($pid, 0);
-  return 1;
+  my $reaped = waitpid($pid, 0);
+  return $reaped > 0 ? $? : undef;
 }
 
-# True while nothing but the default action is attached to the signal, i.e.
-# while taking it over for the duration of a command takes nothing away.
-sub _signal_unclaimed ($signal) {
+# Hand the signal on to whoever was going to receive it. A handler of the
+# embedding program is called, with the signal name, the way Perl itself
+# would call it; a default disposition is re-raised, so the signal keeps the
+# effect it usually has.
+sub _chain_signal ($signal, $previous) {
+  if (ref $previous) {
+    $previous->($signal);
+    return;
+  }
+  $SIG{$signal} = 'DEFAULT';
+  kill $signal, $$;
+}
+
+# True while the embedding program has the signal ignored. Such a signal is
+# left alone: the program asked for the signal to have no effect on it, and
+# the command inherits the disposition across the exec, so taking the signal
+# over would only make program and command disagree about it.
+sub _signal_ignored ($signal) {
   my $handler = $SIG{$signal};
-  return !ref $handler && (!defined $handler || $handler eq 'DEFAULT');
+  return defined $handler && !ref $handler && $handler eq 'IGNORE';
 }
 
 # Signal the command's whole process group, falling back to the bare child
@@ -298,14 +369,19 @@ sub _signal_group ($pid, $signal) {
   return kill($signal, -$pid) || kill($signal, $pid);
 }
 
+# Wait for the child to go away, but no longer than the grace period. Returns
+# the child's status if it was reaped here, and undef while it is still
+# running.
 sub _reap_within_grace ($pid) {
   my $waited = 0;
   while ($waited < TERM_GRACE) {
-    return 1 if waitpid($pid, WNOHANG) != 0;
+    my $reaped = waitpid($pid, WNOHANG);
+    return $? if $reaped > 0;
     select undef, undef, undef, REAP_POLL;
     $waited += REAP_POLL;
   }
-  return waitpid($pid, WNOHANG) != 0;
+  my $reaped = waitpid($pid, WNOHANG);
+  return $reaped > 0 ? $? : undef;
 }
 
 # Timeouts alarm() cannot act on fall back to the server default, and then to

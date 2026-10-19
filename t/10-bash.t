@@ -26,6 +26,22 @@ sub tick_size { my $f = shift; return -s "$f" // 0 }
 # True while anything is left in the process group $pgid.
 sub group_alive { my $pgid = shift; return kill 0, -$pgid }
 
+# Run a snippet of Perl in a subprocess and return what it printed, or undef
+# if the subprocess could not be started. The caller has to be a subprocess:
+# a guard that goes missing in there would kill the test process itself
+# instead of failing an assertion.
+sub run_caller {
+  my ( $code, @args ) = @_;
+
+  my @inc = map { "-I$_" } grep { !ref } @INC;
+  my $pid = open my $caller_out, '-|', $^X, @inc, '-e', $code, @args;
+  return undef unless $pid;
+
+  my $reported = do { local $/; <$caller_out> } // '';
+  close $caller_out;
+  return $reported;
+}
+
 # The identity defaults live on the class, not in bin/mcp-run-bash, so that
 # library users of MCP::Run::Bash are not announced as MCP::Server's
 # 'PerlServer' / '1.0.0' either. Asserting it here is what pins that
@@ -416,28 +432,62 @@ subtest 'terminating the caller takes the command with it' => sub {
 
 # ... but forwarding must not take a signal away from a program that handles
 # it itself - this is a library, and how a server shuts down is its own
-# business. Run in a subprocess: if the guard goes missing, the caller is
-# killed by its own SIGTERM instead of reaching the print.
-subtest 'a signal the caller handles itself is left alone' => sub {
+# business. What is not the library's business to decide is that the command
+# keeps running: the signal is chained to the program's own handler, and the
+# command is stopped either way. Run in a subprocess: if the guard goes
+# missing, the caller is killed by its own SIGTERM instead of reaching the
+# print.
+subtest 'a signal the caller handles itself stops the command and is chained' => sub {
+  my $dir     = tempdir(CLEANUP => 1);
+  my $pidfile = $dir->child('pid');
+
   my $code = <<'CALLER';
 use MCP::Run::Bash;
 my $handled = 0;
 $SIG{TERM} = sub { $handled++ };
-my $result = MCP::Run::Bash->new->execute('kill -TERM $PPID; sleep 1; echo done', undef, 20);
+my $result = MCP::Run::Bash->new->execute($ARGV[0], undef, 20);
 print "handled=$handled exit=$result->{exit_code} stdout=$result->{stdout}\n";
 CALLER
 
-  my @inc = map { "-I$_" } grep { !ref } @INC;
-  my $pid = open my $caller_out, '-|', $^X, @inc, '-e', $code;
-  unless ($pid) {
-    plan skip_all => "cannot fork a caller process: $!";
-    return;
-  }
-  my $reported = do { local $/; <$caller_out> } // '';
-  close $caller_out;
+  my $reported = run_caller($code, "echo \$\$ > '$pidfile'; kill -TERM \$PPID; sleep 1; echo done");
+  plan skip_all => 'cannot fork a caller process' unless defined $reported;
 
-  like $reported, qr/handled=1 /, "the caller's own TERM handler ran instead of ours";
-  like $reported, qr/exit=0 stdout=done/, 'and the command was left running, not killed';
+  like $reported, qr/handled=1 /, "the caller's own TERM handler ran, chained after ours";
+  like $reported, qr/exit=143 /, 'and the command was killed instead of left running';
+  unlike $reported, qr/stdout=done/, 'the command did not run to the end';
+
+  # The command is gone, and so is its process group - a signal that stops
+  # the command must not leave the group behind.
+  my $pgid = $pidfile->exists ? $pidfile->slurp : '';
+  chomp $pgid;
+  ok $pgid =~ /^\d+$/ && wait_until( 'group gone', 60, sub { !group_alive($pgid) } ),
+    'no process group was left behind';
+
+  my $orphan = $pidfile->exists ? $pidfile->slurp : '';
+  chomp $orphan;
+  if ($orphan =~ /^\d+$/ && kill 0, $orphan) { kill 'KILL', -$orphan or kill 'KILL', $orphan }
+};
+
+# An ignored signal stays ignored - in the program and in the command. The
+# program asked for the signal to have no effect on it, and the command
+# inherits the disposition across the exec, so taking the signal over would
+# only make program and command disagree about it. This is the one case in
+# which a command can outlive the signal aimed at the program running it,
+# and it is the behaviour the module had before handlers were chained.
+subtest 'a signal the caller ignores is left alone' => sub {
+  my $code = <<'CALLER';
+use MCP::Run::Bash;
+$SIG{TERM} = 'IGNORE';
+my $result = MCP::Run::Bash->new->execute($ARGV[0], undef, 20);
+print "alive=1 exit=$result->{exit_code} stdout=$result->{stdout}\n";
+CALLER
+
+  my $reported = run_caller($code, 'kill -TERM $PPID; sleep 1; echo done');
+  plan skip_all => 'cannot fork a caller process' unless defined $reported;
+
+  like $reported, qr/alive=1 /, 'the caller ignored the signal and is still running';
+  like $reported, qr/exit=0 /, 'and the command was left running, as before';
+  like $reported, qr/stdout=done/, 'the ignored signal did not stop it';
 };
 
 done_testing;
