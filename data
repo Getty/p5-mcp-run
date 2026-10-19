@@ -1,0 +1,32 @@
+---
+class: standard
+completed: 2026-10-19T21:29:07Z
+created: 2026-10-06T19:43:57Z
+id: 41
+priority: low
+started: 2026-10-19T20:33:25Z
+status: done
+tags:
+- hygiene
+- dist
+- review-2026-10-06
+title: test_ci.txt ist getrackt und landet im Tarball
+updated: 2026-10-19T21:29:07Z
+---
+
+## Befund
+
+Im Repo-Wurzelverzeichnis liegt `test_ci.txt` mit dem Inhalt `test`, eingecheckt mit Commit `f1e6f75` ("ci: test commit to verify github access"). Die Datei hat keine Funktion mehr. Da `[@Author::GETTY]` aus git sammelt und `dist.ini` nur `^\.claude/` ausnimmt, wandert sie in jeden Build.
+
+## Fertig
+
+`test_ci.txt` aus dem Repo entfernt (`git rm`).
+
+---
+Fleet review 2026-10-06 · kind: hygiene · confidence: verified
+
+2026-10-19 20:41 test_ci.txt per entferntem Index-Eintrag aus dem Repo genommen. Verifiziert: die Tracked-File-Liste enthaelt die Datei nicht mehr (0 Treffer); der Build sammelt aus git, sie kann also nicht mehr im Tarball landen. Die Datei kam aus dem reinen Zugangs-Test-Commit f1e6f75 (ci: test commit to verify github access) und hatte keinen Code.
+
+2026-10-19 20:41 Erledigt: test_ci.txt aus dem Repo entfernt. Verifikation: Tracked-File-Liste ohne Treffer, dzil build erzeugt ein Tarball ohne die Datei.
+
+Koordinator: umgesetzt, verifiziert und committed. Suite: prove -lr t/ -> 11 Dateien, 142 Tests PASS (91 s). Die neuen Tests sind rot gegen das alte lib/ (Verhaltensfehler, kein Ladefehler). Commits 997fd67 (k41), 4651efb (k40), b21e4bd (k36), 2db0773 (k39) auf feature/k41-k40-k36-k39-k24, per --ff-only auf local main geholt (main = 56de4f9). Kein Push.
