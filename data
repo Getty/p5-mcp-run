@@ -1,0 +1,42 @@
+---
+class: standard
+completed: 2026-10-19T21:29:17Z
+created: 2026-10-06T19:43:52Z
+id: 40
+priority: medium
+started: 2026-10-19T20:33:20Z
+status: done
+tags:
+- docs
+- pod
+- review-2026-10-06
+title: MCP::Run::Bash SYNOPSIS ruft $server->run, die Methode gibt es nicht
+updated: 2026-10-19T21:29:17Z
+---
+
+## Befund
+
+`lib/MCP/Run/Bash.pm:16` zeigt im SYNOPSIS:
+
+    my $server = MCP::Run::Bash->new(...);
+    $server->run;
+
+Weder MCP::Run::Bash noch MCP::Run noch MCP::Server haben eine Methode `run`:
+
+    perl -Ilib -MMCP::Run::Bash -e 'print MCP::Run::Bash->can("run") ? "yes" : "NO"'
+    NO
+
+Wer das SYNOPSIS kopiert, bekommt `Can't locate object method "run"`. Die richtigen Einstiege stehen in `lib/MCP/Run.pm:18` (`$server->to_stdio`) und `lib/MCP/Run.pm:217` (`run_stdio`); `bin/mcp-run-bash:52` nutzt `MCP::Run::Bash->run_stdio(%args)`.
+
+## Fertig
+
+SYNOPSIS von MCP::Run::Bash endet mit `$server->run_stdio;` (oder `to_stdio`), passend zu MCP::Run und zum README (`README.md:36`).
+
+---
+Fleet review 2026-10-06 · kind: docs · confidence: verified
+
+2026-10-19 20:41 Ursache bestaetigt: perl -Ilib -MMCP::Run::Bash -e 'print MCP::Run::Bash->can("run") ? "yes" : "NO"' liefert NO. Fix: SYNOPSIS in lib/MCP/Run/Bash.pm zeigt jetzt $server->to_stdio - dieselbe Form wie MCP::Run.pm:18 und README.md:36. Regressionsschutz ergaenzt: t/07-pod.t extrahiert die Methodenaufrufe aus den SYNOPSIS-Abschnitten von MCP::Run und MCP::Run::Bash und prueft, dass jeder aufruf auf der dokumentierten Klasse existiert. Der Test ist rot gegen das alte lib (Fehlschlag: MCP::Run::Bash->run exists) und gruen mit dem Fix.
+
+2026-10-19 20:41 Erledigt: lib/MCP/Run/Bash.pm SYNOPSIS ruft jetzt $server->to_stdio (statt des nicht existenten $server->run), konsistent mit MCP::Run.pm und README.md. Dazu t/07-pod.t als Drift-Waechter: SYNOPSIS-Methodenaufrufe muessen existieren - rot gegen das alte lib belegt (Failed test: MCP::Run::Bash->run exists).
+
+Koordinator: umgesetzt, verifiziert und committed. Suite: prove -lr t/ -> 11 Dateien, 142 Tests PASS (91 s). Die neuen Tests sind rot gegen das alte lib/ (Verhaltensfehler, kein Ladefehler). Commits 997fd67 (k41), 4651efb (k40), b21e4bd (k36), 2db0773 (k39) auf feature/k41-k40-k36-k39-k24, per --ff-only auf local main geholt (main = 56de4f9). Kein Push.
