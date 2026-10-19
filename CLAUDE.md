@@ -194,7 +194,7 @@ mit (Dev-Loop `prove -lr t/` unberührt).
 ## Sharp Edges (für Entwickler)
 
 Die Entwickler-Invarianten und Fallen (kein-Sandbox `allowed_commands`,
-`working_directory` als `cd '$dir' && ...`, der Byte-Deckel, PostToolUse-Compression und
+`working_directory` als `chdir` im Kindprozess (fehlendes Verzeichnis = Fehler ohne Ausführung), der Byte-Deckel, PostToolUse-Compression und
 die Permission-Grenze des Hooks, die zwei intentionalen Compression-Defaults,
 `format_result`-Threading, MCP >= 0.15 und der `MCP::Server::Legacy`-Pfad, das
 Compile-Zeit-`use` von `MCP::Run::Compress`, `serverInfo`-Identität) sind die einzige

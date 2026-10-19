@@ -1,6 +1,14 @@
 Revision history for MCP-Run
 
 {{$NEXT}}
+  - Apply `working_directory` with `chdir` in the child process instead of
+    prefixing the command with `cd 'DIR' && `. The prefix bound only to the
+    first command of a list: with `;`, newlines or a background `&` the
+    other members ran in the server's directory, and when the `cd` failed
+    the rest of the list ran anyway, there. A directory that is missing or
+    cannot be entered is now an error (exit 1, `error` names the directory
+    and the reason) and the command is not run (karr #42, found by
+    langertha-raider).
   - Fix the ls filter doing nothing on every system whose `ls` marks the
     mode column. Fedora, Rocky and RHEL append a `.` there for the
     SELinux context, systems with POSIX ACLs a `+`, macOS an `@` for

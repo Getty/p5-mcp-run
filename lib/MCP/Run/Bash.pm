@@ -22,8 +22,11 @@ C<bash -c $command> via L<IPC::Open3>. Captures stdout and stderr separately,
 enforces a per-command timeout using C<alarm>, and returns the exit code.
 
 When a C<working_directory> is specified (either as a server default or
-passed per-invocation), it is prepended to the command as
-C<cd '$dir' && $command> before being handed to bash.
+passed per-invocation), the child process changes into it with C<chdir>
+before bash is started, so every part of the command - after C<;>, a newline
+or a background C<&> - runs there. A directory that does not exist or cannot
+be entered is an error: the command is not run, the exit code is C<1> and
+C<error> says which directory and why.
 
 The command runs in its own process group, so a timeout reaches the whole
 process tree and not just the bash that was started. On timeout the process
@@ -84,13 +87,6 @@ L<MCP::Server>.
 =cut
 
 sub execute ($self, $command, $working_directory, $timeout) {
-  my $full_command = $command;
-  if (defined $working_directory && length $working_directory) {
-    my $escaped = $working_directory;
-    $escaped =~ s/'/'\\''/g;
-    $full_command = "cd '$escaped' && $command";
-  }
-
   $timeout = $self->_effective_timeout($timeout);
 
   my ($stdout, $stderr) = ('', '');
@@ -98,6 +94,11 @@ sub execute ($self, $command, $working_directory, $timeout) {
 
   eval {
     my $err = gensym;
+
+    # The child reports a failed chdir through this pipe. Perl sets
+    # close-on-exec on it, so a successful exec closes the write end and the
+    # parent reads end-of-file; a failure leaves the reason behind.
+    pipe(my $chdir_r, my $chdir_w) or die "pipe: $!\n";
 
     # open3 with '-' forks without exec'ing and returns 0 in the child, which
     # lets the child put itself into its own process group *before* exec.
@@ -108,11 +109,24 @@ sub execute ($self, $command, $working_directory, $timeout) {
     my $pid = open3(my $in, my $out, $err, '-');
     unless ($pid) {
       eval { setpgrp(0, 0) };    # best effort: not available everywhere
-      exec 'bash', '-c', $full_command
+      close $chdir_r;
+
+      # chdir here, not "cd DIR && COMMAND" in front of the command: the
+      # prefix binds only to the first command of a list, so a command after
+      # ';', a newline or '&' ran in the wrong directory, and when the cd
+      # failed the rest of the list ran anyway, in the caller's. A directory
+      # that cannot be entered stops here, before the command exists.
+      if (defined $working_directory && length $working_directory
+          && !chdir $working_directory) {
+        syswrite $chdir_w, "cannot change to working directory '$working_directory': $!";
+        POSIX::_exit(1);
+      }
+      exec 'bash', '-c', $command
         or print STDERR "mcp-run-bash: exec of bash failed: $!\n";
       POSIX::_exit(127);         # must never return into the parent program
     }
     close $in;
+    close $chdir_w;
 
     my $select = IO::Select->new($out, $err);
     my $timed_out = 0;
@@ -183,6 +197,19 @@ sub execute ($self, $command, $working_directory, $timeout) {
 
     close $out;
     close $err;
+
+    # Nothing is written on success (the descriptor closes on exec), so a
+    # message here means the command never started.
+    my $chdir_error = '';
+    unless ($timed_out) {
+      my $got = sysread($chdir_r, $chdir_error, 4096);
+      $chdir_error = '' unless $got;
+    }
+    close $chdir_r;
+    if (length $chdir_error) {
+      $exit_code = 1;
+      $error     = $chdir_error;
+    }
   };
 
   if ($@ && !defined $exit_code) {
@@ -203,8 +230,9 @@ sub execute ($self, $command, $working_directory, $timeout) {
 
 Implements L<MCP::Run/execute>. Runs C<$command> under C<bash -c>,
 capturing stdout and stderr via L<IPC::Open3> and L<IO::Select>. If
-C<$working_directory> is defined, prepends C<cd '$working_directory' &&> to
-the command.
+C<$working_directory> is defined and not empty, the child C<chdir>s into it
+first; if that fails the command is not executed and the result has exit code
+C<1> and an C<error> of the form C<cannot change to working directory '...': reason>.
 
 The timeout is enforced with C<alarm>. A C<$timeout> C<alarm> cannot act on
 falls back to the server's C<timeout> attribute, and to C<30> seconds if that
