@@ -1,0 +1,31 @@
+---
+class: standard
+completed: 2026-10-19T21:29:37Z
+created: 2026-09-25T02:55:43Z
+id: 39
+priority: medium
+started: 2026-10-19T20:33:14Z
+status: done
+tags:
+- bash
+- signals
+title: 'MCP::Run::Bash: Befehlsgruppe auch beenden, wenn der Host SIGINT/SIGTERM selbst
+  abfaengt'
+updated: 2026-10-19T21:29:37Z
+---
+
+Aus langertha-raider#61 (2026-09-25): MCP::Run::Bash 0.107 startet Befehle in eigener Prozessgruppe (setpgrp) und leitet INT/TERM/HUP nur weiter, solange $SIG{...} DEFAULT ist. Raider installiert eigene Handler (interrupted-Dokument), dadurch bleibt der bash-Befehl nach kill -TERM am Leben. Raider raeumt jetzt selbst ueber /proc-Kinder auf (Workaround). Wunsch: Befehl auch bei belegtem Handler beenden und an den vorherigen Handler weiterketten, oder laufende PIDs/Gruppen per API exponieren.
+
+2026-10-19 21:08 Umgesetzt: MCP::Run::Bash uebernimmt die Terminationssignale (HUP/INT/TERM) jetzt auch dann, wenn der aufrufende Prozess einen eigenen Handler installiert hat. Der Befehl wird gestoppt (TERM an die Gruppe, dann KILL), danach wird der Signalname an den vorherigen Handler weitergereicht: der Handler des Programms laeuft weiter, der Befehl laeuft nicht weiter. Genau der Wunsch der Karte, ohne API-Aenderung.
+
+2026-10-19 21:08 Dabei gemessen, nicht angenommen: ein zweiter waitpid auf ein bereits gereaptes Kind liefert -1 und setzt das Exit-Statuszeichen auf -1, der Exit-Code waere sonst 255 statt 143 geworden. Der Handler merkt sich den Status jetzt beim Reap, der Hauptfluss nutzt ihn, wenn sein eigener waitpid nichts findet. Das Statuszeichen ist global, ein waitpid im Handler ueberschreibt also den Status, den der Hauptfluss gleich liest; der Handler sichert ihn und stellt ihn wieder her, ausser er hat das Kind selbst gereapt.
+
+2026-10-19 21:08 Gemessen: ein ignorierter Signal gehoert dem Programm. Das Kind erbt die Ignore-Disposition ueber den exec hinweg (POSIX), und bashs kill-Baustein sendet einen Signal, den die Shell selbst ignoriert, gar nicht: bash mit trap auf TERM, kill an den Parent, der Parent bekommt nichts. Ein Programm, das TERM ignoriert, kann dem Befehl also gar kein TERM schicken, das Signal wird schon bei ihm verworfen. Entscheidung: ein ignorierter Signal wird gar nicht erst uebernommen. Das ist die alte, dokumentierte Semantik und die einzige Stelle, an der ein Befehl das Signal ueberleben kann. Bewusst so, weil die Alternative - die Dispositionen im Kind vor dem exec zuruecksetzen - die Umgebung des Befehls aendern wuerde, was ausserhalb des Kartenauftrags liegt. Die Ignore-Semantik ist damit gepinnt, nicht geaendert.
+
+2026-10-19 21:08 Bekannte Restkante, nicht behoben: der Handler wird nach dem fork installiert. Das Kind braucht Millisekunden (exec bash, Kommando starten), der Elternteil Mikrosekunden, die Race verliert man also rund tausend zu eins. Wer sie verliert, laesst den eigenen Handler des Programms laufen und der Befehl laeuft weiter. Das Haetten hiesse, die Signalumgebung des Kindes zu aendern.
+
+2026-10-19 21:08 Verifiziert: neuer Subtest 'a signal the caller handles itself stops the command and is chained' in t/10-bash.t, Caller im Subprozess mit eigenem TERM-Handler, das Kommando schickt TERM an den Parent: Handler lief genau einmal, Exit 143, kein done im stdout, Prozessgruppe danach weg. Der Subtest ist rot gegen das alte lib (git archive main): dort exit 0 und done im stdout, der Befehl laeuft weiter, genau der Karten-Bug. Der zweite neue Subtest 'a signal the caller ignores is left alone' pinnt die Ignore-Semantik (Exit 0, done im stdout). Volle Suite: prove -lr t/ mit 11 Dateien und 142 Tests, alle gruen. Nach dem Lauf keine verwaisten Prozessgruppen (ps). Keine Aenderung an der oeffentlichen API, keine neue Konfiguration.
+
+2026-10-19 21:09 Fertig: MCP::Run::Bash stoppt die Befehlsgruppe jetzt auch dann, wenn der aufrufende Prozess selbst einen Handler fuer HUP/INT/TERM installiert hat, und reicht das Signal danach an diesen Handler weiter. Geaendert: lib/MCP/Run/Bash.pm (Signaluebernahme, Statusbehandlung im Handler, Chaining), t/10-bash.t (zwei neue Subtests, Caller im Subprozess). Verifiziert: neuer Subtest rot gegen das alte lib (dort laeuft der Befehl weiter, exit 0), mit dem neuen lib gruen (Exit 143, Handler genau einmal, Prozessgruppe weg); volle Suite prove -lr t/ gruen, keine verwaisten Prozessgruppen. Offen: die Ignore-Semantik bleibt wie vorher (Begründung und Messung auf der Karte), und die Race zwischen fork und Handler-Installation ist dokumentiert, aber nicht behoben - beides waere eine Aenderung an der Signalumgebung des Kindes und damit eine Produktentscheidung.
+
+Koordinator: umgesetzt, verifiziert und committed. Suite: prove -lr t/ -> 11 Dateien, 142 Tests PASS (91 s). Die neuen Tests sind rot gegen das alte lib/ (Verhaltensfehler, kein Ladefehler). Commits 997fd67 (k41), 4651efb (k40), b21e4bd (k36), 2db0773 (k39) auf feature/k41-k40-k36-k39-k24, per --ff-only auf local main geholt (main = 56de4f9). Kein Push.
