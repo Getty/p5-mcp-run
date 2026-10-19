@@ -50,9 +50,10 @@ command-spezifischen Filter nicht.
 - **`allowed_commands` ist KEIN Sandbox.** Es prüft nur das erste Wort der raw
   command — `bash -c 'rm -rf /'` mit `allowed_commands => ['bash']` läuft.
   Echte Sandboxing ist eine separate Diskussion; nicht "fixen" wollen.
-- **`working_directory` wird per `cd '$dir' && ...`** umgesetzt, nicht via
-  `chdir`/`open3`. Heißt: quoted-paths-Escaping muss korrekt sein
-  (`lib/MCP/Run/Bash.pm`, single-quote-Escape).
+- **`working_directory` wird per `chdir` im Kindprozess gesetzt** (k42), nicht
+  als `cd '$dir' &&`-Präfix: ein Präfix ließ Kettenglieder nach `;`, `&` oder
+  Zeilenumbruch im Aufrufer-cwd laufen. Scheitert der `chdir`, meldet das Kind es
+  über eine Close-on-exec-Pipe, der Befehl startet nie (Exit 1, Fehlertext).
 - **Timeout → Exit 124.** Konvention wie GNU `timeout(1)`. Nicht eigene
   Exit-Codes erfinden.
 - **`mcp-run-bash` Compression default = AN** (bin/mcp-run-bash), aber
