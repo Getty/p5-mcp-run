@@ -55,6 +55,13 @@ ACL, C<@> for macOS extended attributes. For a symlink the preserved name is
 the whole C<< link -> target >>, because the target is the only thing the
 entry actually states.
 
+The date column is recognised in every shape C<ls --time-style=> produces:
+the locale default (C<Aug 14 08:44>, and C<Mar 12 2024> for an older file),
+C<iso> (C<08-23 10:00>), C<long-iso> (C<2026-08-23 10:00>), C<full-iso>
+(C<2026-08-23 10:00:00.123456789 +0200>) and the date alone, as in
+C<+%Y-%m-%d> (C<2026-08-23>). A strftime format that prints neither an ISO
+date nor an ISO time is not recognised, and such a line stays uncollapsed.
+
 For non-long listings, common noise directories are filtered:
 F<node_modules>, F<.git>, F<.target>, F<.next>, F<.nuxt>, F<.cache>,
 F<__pycache__>, F<.DS_Store>, F<vendor/bundle>.

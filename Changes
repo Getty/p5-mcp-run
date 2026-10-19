@@ -1,6 +1,11 @@
 Revision history for MCP-Run
 
 {{$NEXT}}
+  - Recognise the date column of `ls --time-style=` in every shape it
+    produces: the locale default, `iso`, `long-iso`, `full-iso` and the
+    date alone. The filter matches the date forms as alternatives
+    instead of loosening the regex, so a strftime format that prints
+    neither an ISO date nor an ISO time still stays uncollapsed.
   - Fix the SYNOPSIS of `MCP::Run::Bash`: it called `$server->run`, a
     method that exists neither in `MCP::Run::Bash` nor in `MCP::Run` nor
     in `MCP::Server`, so the first line a reader copied died at runtime

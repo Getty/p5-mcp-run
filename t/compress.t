@@ -81,6 +81,22 @@ subtest 'ls long listing: access-method suffixes and every file type' => sub {
       'Dr--r--r--  1 root root       0 Apr 24 02:32 door', 'D door'],
     ['a year instead of a time, for an old file',
       '-rw-r--r--. 1 getty getty   246 Mar 12  2024 old.txt', '- old.txt'],
+    # The date fields are not one shape. `ls --time-style=long-iso` prints
+    # 2026-08-23 10:00, --time-style=full-iso adds the seconds, the
+    # nanoseconds and the zone offset, --time-style=iso drops the year and
+    # prints 08-23 10:00, and a strftime format like +%Y-%m-%d prints the
+    # date alone. The old transform only knew the locale form (Aug 14 08:44),
+    # so every other format left the line uncollapsed - the filter still
+    # matched the listing, it just did not compress it (karr #36).
+    ['--time-style=long-iso',
+      '-rw-r--r--  1 getty getty  1234 2026-08-23 10:00 README.md', '- README.md'],
+    ['--time-style=full-iso',
+      '-rw-r--r--  1 getty getty  1234 2026-08-23 10:00:00.123456789 +0200 README.md',
+      '- README.md'],
+    ['--time-style=iso',
+      '-rw-r--r--  1 getty getty  1234 08-23 10:00 README.md', '- README.md'],
+    ['--time-style=+%Y-%m-%d',
+      '-rw-r--r--  1 getty getty  1234 2026-08-23 README.md', '- README.md'],
   );
 
   for my $case (@cases) {

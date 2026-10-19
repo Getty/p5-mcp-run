@@ -302,7 +302,27 @@ sub _build_default_filters {
       # symlink that name is `link -> target`, kept whole on purpose: the
       # target is the only thing a symlink actually says, and dropping it
       # would leave an entry that names a file and hides what it is.
-      if ($line =~ m{^([-bcdDlps])[rwx-]{9}[.+\@]?\s+\d+\s+\S+\s+\S+\s+\d+(?:,\s*\d+)?\s+\w+\s+\d+\s+[\d:]+\s+(.+)$}) {
+      #
+      # The date is not one shape either. `ls --time-style=` picks it, and
+      # the formats do not agree on a single one: the locale default prints
+      # `Aug 14 08:44`, long-iso prints `2026-08-23 10:00`, full-iso adds
+      # seconds, nanoseconds and the zone offset, iso drops the year and
+      # prints `08-23 10:00`, and a strftime format like +%Y-%m-%d prints
+      # the date alone. So the date is an alternation over whole formats,
+      # not a loosened single pattern: each alternative describes one
+      # format completely, and a line that fits none of them stays
+      # uncollapsed rather than being cut at the wrong place (karr #36).
+      if ($line =~ m{
+          ^([-bcdDlps])[rwx-]{9}[.+\@]?
+          \s+\d+ \s+\S+ \s+\S+ \s+\d+(?:,\s*\d+)?
+          \s+(?:
+              \d{4}-\d{2}-\d{2} \s+ \d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)? (?:\s+[+-]\d{2}:?\d{2})?  # long-iso, full-iso
+            | \d{4}-\d{2}-\d{2}                                                                 # +%Y-%m-%d
+            | \d{2}-\d{2} \s+ \d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?                               # iso
+            | \w+ \s+ \d+ \s+ [\d:]+                                                           # locale
+          )
+          \s+(.+)$
+        }x) {
         return $1 . " " . $2;
       }
       return $line;
