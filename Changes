@@ -1,6 +1,9 @@
 Revision history for MCP-Run
 
 {{$NEXT}}
+  - Remove `test_ci.txt` from the distribution. The file was tracked in
+    git and therefore shipped in the CPAN tarball, where it says
+    nothing.
   - Apply `working_directory` with `chdir` in the child process instead of
     prefixing the command with `cd 'DIR' && `. The prefix bound only to the
     first command of a list: with `;`, newlines or a background `&` the
