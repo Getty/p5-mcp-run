@@ -1,0 +1,19 @@
+---
+claimed_at: 2026-10-19T10:46:54Z
+claimed_by: mcp-run-k42
+class: standard
+completed: 2026-10-19T10:46:54Z
+created: 2026-10-19T10:34:30Z
+id: 42
+priority: medium
+started: 2026-10-19T10:35:52Z
+status: done
+title: Run the command in the working directory instead of prefixing cd DIR &&
+updated: 2026-10-19T10:46:54Z
+---
+
+Fund aus langertha-raider #159 (Strom D, 2026-10-19): Bash.pm baut "cd '$dir' && $command". raider sah, dass bei Befehlsketten Teile im falschen Verzeichnis liefen (z. B. wenn cd scheitert, laufen die Glieder nach ; trotzdem, im Aufrufer-cwd; Hintergrund-&, Subshell-Grenzen). raider hat es mit chdir im Kindprozess gelöst (t/194 dort). Ursache mit Tests belegen, chdir im Kind statt Präfix, fehlendes Verzeichnis = klarer Fehler ohne Ausführung.
+
+2026-10-19 10:37 Red: t/12-bash-chdir.t on cd-prefix code: 5 of 9 subtests fail (missing dir: no error, command ran; ; chain and newline chain after failing cd run in caller cwd; 'true & pwd' runs in caller cwd; not-a-directory no error). Quoting subtest (apostrophe etc.) is green on old code: the escape was correct; kept as regression.
+
+2026-10-19 10:43 Done. Commits d79e63f (red tests t/12-bash-chdir.t), d7bfc4e (fix). Design: chdir in the forked child before exec; failure reported via a close-on-exec pipe (parent reads reason after reaping; EOF = success), so the error field carries 'cannot change to working directory DIR: reason', exit 1 (no new exit code), command never started. Pipe over a pre-check in the parent: no race and the real errno. Pipe over stderr marker: error field stays clean and unambiguous. Docs: Bash.pm POD, Changes, CLAUDE.md sharp-edge sentence. Skill mcp-run-core (gitignored) still says cd prefix: stale, update it. Suite: only t/10-bash.t 'terminating the caller takes the command with it' fails, also on the pre-change code: test sleeps 1s but loading MCP::Run::Bash takes 2.3s on this host (pre-existing, environmental). net-async-mcp-run suite green (12 files, 28 tests) against this branch.
