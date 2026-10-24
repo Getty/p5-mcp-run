@@ -1,6 +1,6 @@
 Revision history for MCP-Run
 
-{{$NEXT}}
+0.107     2026-10-24 03:14:19Z
   - Document that the limit on failed commands belongs to the hook and
     not to the distribution: the MCP server produces the output itself
     and compresses it whether the command succeeded or failed, with the
