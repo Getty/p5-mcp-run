@@ -21,6 +21,9 @@
       "perl-mcp@getty",
       "perl-mojo@getty",
       "perl-release-dist-ini@getty"
+    ],
+    "bundles": [
+      "getty-cpan-dist@getty"
     ]
   },
   "targets": [

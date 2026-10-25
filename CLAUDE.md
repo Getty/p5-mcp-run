@@ -227,7 +227,8 @@ für SSH/kubectl bleibt der Filter gleich, weil `command` weitergegeben wird.
 ## Delegation
 
 Delegate behavior-relevant code to the right agent instead of touching it yourself —
-principle and lane are in `.claude/rules/mcp-run-rules.md`.
+the delegation lock and the publish gate are shared house rules (skilletor bundle
+`getty-cpan-dist@getty`); lanes and hazards are in `.claude/rules/mcp-run-rules.md`.
 
 | Task | Agent |
 |---|---|
