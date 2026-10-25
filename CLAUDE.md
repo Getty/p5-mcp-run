@@ -1,31 +1,31 @@
 # CLAUDE.md
 
-MCP-Run bietet zwei Produkte:
+MCP-Run offers two products:
 
-1. **mcp-run-bash** (primär) – Ein stdio MCP-Server mit einem `run`-Tool, der
-   Shell-Commands via `bash -c` ausführt und mit 30+ command-spezifischen
-   Filtern komprimierte Ausgabe liefert. Für Claude Desktop, `.mcp.json` und
-   andere MCP-Clients. Das ist das Hauptprodukt.
-2. **mcp-run-compress** (Bonus) – Ein Claude Code Hook, der dieselbe
-   Compression-Pipeline auf das eingebaute Bash-Tool von Claude Code anwendet.
-   Komprimiert in PostToolUse; PreToolUse macht nur Co-Authored-By und die
-   `no-compress`-Markierung.
-   Praktisch: durch das Docker-Image (`raudssus/mcp-run-compress`) ist der Hook
-   auch ohne Perl-Toolchain auf dem Host installierbar.
+1. **mcp-run-bash** (primary) – A stdio MCP server with a `run` tool that
+   executes shell commands via `bash -c` and returns compressed output through
+   30+ command-specific filters. For Claude Desktop, `.mcp.json` and other MCP
+   clients. This is the main product.
+2. **mcp-run-compress** (bonus) – A Claude Code hook that applies the same
+   compression pipeline to Claude Code's built-in Bash tool.
+   Compresses in PostToolUse; PreToolUse only handles Co-Authored-By and the
+   `no-compress` marker.
+   Handy: thanks to the Docker image (`raudssus/mcp-run-compress`) the hook can
+   also be installed without a Perl toolchain on the host.
 
-## Projektstruktur
+## Project structure
 
 ```
 p5-mcp-run/
 ├── bin/
-│   ├── mcp-run-bash       # MCP stdio Server (PRIMÄR)
-│   └── mcp-run-compress   # PostToolUse-Compression + PreToolUse-Hook + Installer (BONUS)
+│   ├── mcp-run-bash       # MCP stdio server (PRIMARY)
+│   └── mcp-run-compress   # PostToolUse compression + PreToolUse hook + installer (BONUS)
 ├── lib/
 │   └── MCP/
-│       ├── Run.pm         # Basis-Server mit run-Tool
+│       ├── Run.pm         # Base server with run tool
 │       └── Run/
-│           ├── Bash.pm    # bash -c Execution via IPC::Open3
-│           └── Compress.pm # Filter-Pipeline (30+ Filter)
+│           ├── Bash.pm    # bash -c execution via IPC::Open3
+│           └── Compress.pm # Filter pipeline (30+ filters)
 ├── t/                     # Tests
 ├── dist.ini               # [@Author::GETTY] + [@Author::GETTY::Docker]
 └── Dockerfile             # Multi-stage build
@@ -35,142 +35,141 @@ p5-mcp-run/
 
 ```bash
 prove -l t              # Tests
-prove -l t/10-bash.t    # Einzeltest
-dzil build              # Distribution bauen
-dzil test               # Test mit dzil
+prove -l t/10-bash.t    # Single test
+dzil build              # Build distribution
+dzil test               # Test with dzil
 ```
 
-## mcp-run-bash (primär)
+## mcp-run-bash (primary)
 
-Einstieg: `mcp-run-bash` oder `MCP::Run::Bash->run_stdio`.
+Entry point: `mcp-run-bash` or `MCP::Run::Bash->run_stdio`.
 
-**Env-Vars:**
-| Variable | Default | Beschreibung |
+**Env vars:**
+| Variable | Default | Description |
 |----------|---------|-------------|
-| `MCP_RUN_ALLOWED_COMMANDS` | alle | Komma-getrennte Whitelist |
-| `MCP_RUN_WORKING_DIRECTORY` | cwd | Default Working Directory |
-| `MCP_RUN_TIMEOUT` | 30 | Timeout in Sekunden. Ganze Zahl 1..2147483647, sonst bricht der Start ab (kein stiller Default) |
-| `MCP_RUN_COMPRESS` | Modul: 0, bin: 1 | Compression aktivieren (bin/mcp-run-bash default: 1) |
-| `MCP_RUN_TOOL_NAME` | run | Name des MCP-Tools |
+| `MCP_RUN_ALLOWED_COMMANDS` | all | Comma-separated whitelist |
+| `MCP_RUN_WORKING_DIRECTORY` | cwd | Default working directory |
+| `MCP_RUN_TIMEOUT` | 30 | Timeout in seconds. Integer 1..2147483647, otherwise startup aborts (no silent default) |
+| `MCP_RUN_COMPRESS` | module: 0, bin: 1 | Enable compression (bin/mcp-run-bash default: 1) |
+| `MCP_RUN_TOOL_NAME` | run | Name of the MCP tool |
 
-**Compression:** `compress: true` im Tool-Call oder `MCP_RUN_COMPRESS=1`. Der
-original command wird an `$compressor->compress()` durchgereicht, sodass
-command-spezifische Filter (ls, git, make, …) im MCP-Server-Modus greifen.
+**Compression:** `compress: true` in the tool call or `MCP_RUN_COMPRESS=1`. The
+original command is passed through to `$compressor->compress()`, so
+command-specific filters (ls, git, make, …) apply in MCP server mode.
 
 **Tool Schema:**
 ```json
 { "command": "ls -la", "working_directory": "/tmp", "timeout": 10, "compress": false }
 ```
 
-## mcp-run-compress (Bonus)
+## mcp-run-compress (bonus)
 
-Claude Code Hook für das eingebaute Bash-Tool. Wendet dieselbe
-Compression-Pipeline auf Bash-Output von Claude Code an. Standalone via Docker
-installierbar (`raudssus/mcp-run-compress`) — kein Perl auf dem Host nötig.
+Claude Code hook for the built-in Bash tool. Applies the same compression
+pipeline to Claude Code's Bash output. Installable standalone via Docker
+(`raudssus/mcp-run-compress`) — no Perl needed on the host.
 
-**Zwei Hooks, ein Kommando.** `--install-claude` registriert `mcp-run-compress
---hook` auf zwei Events; das Skript dispatcht über `hook_event_name`:
-- **PostToolUse** komprimiert, via `hookSpecificOutput.updatedToolOutput`. Die
-  Command wird nicht angefasst.
-- **PreToolUse** macht nur, was *vor* der Ausführung passieren muss:
-  Co-Authored-By und die `no-compress`-Markierung.
+**Two hooks, one command.** `--install-claude` registers `mcp-run-compress
+--hook` on two events; the script dispatches on `hook_event_name`:
+- **PostToolUse** compresses, via `hookSpecificOutput.updatedToolOutput`. The
+  command is not touched.
+- **PreToolUse** only does what has to happen *before* execution:
+  Co-Authored-By and the `no-compress` marker.
 
-Der `--b64`-Rewrite und `--filter-files` sind **weg**, mit ihnen der
-hardcodierte 1800s-Timeout und das Docker-Pipe-Snippet.
+The `--b64` rewrite and `--filter-files` are **gone**, and with them the
+hardcoded 1800s timeout and the Docker pipe snippet.
 
-**Modi** (wählen nur die Kommandozeile in settings.json, der Code ist derselbe):
+**Modes** (they only choose the command line in settings.json; the code is the same):
 - `native` (default): `mcp-run-compress --hook`
 - `docker`: `docker run --rm -i --network none ... --hook`
 
-**Env-Vars:**
-| Variable | Default | Beschreibung |
+**Env vars:**
+| Variable | Default | Description |
 |----------|---------|-------------|
-| `MCP_RUN_COMPRESS_INSTALL_MODE` | native | native oder docker |
-| `MCP_RUN_COMPRESS_IMAGE` | raudssus/mcp-run-compress:latest | Docker Image (pinned in image) |
-| `MCP_RUN_COMPRESS_MAX_BYTES` | 29000 | Obergrenze der ersetzten Ausgabe. Darüber persistiert der Harness sie und zeigt dem Modell 2 KB Preview — schlechter als gar nicht komprimieren. Greift nur, wenn es eine Rohdatei gibt, auf die verwiesen werden kann |
-| `MCP_RUN_COMPRESS_NO_CO_AUTHORED` | - | Co-Authored-By deaktivieren |
-| `CO_AUTHORED_BY` | - | Replacement für Co-Authored-By (validiert: Wörter + optional `<mail@host>`, sonst kein Trailer) |
-| `ANTHROPIC_MODEL` | - | Fallback für CO_AUTHORED_BY |
+| `MCP_RUN_COMPRESS_INSTALL_MODE` | native | native or docker |
+| `MCP_RUN_COMPRESS_IMAGE` | raudssus/mcp-run-compress:latest | Docker image (pinned in image) |
+| `MCP_RUN_COMPRESS_MAX_BYTES` | 29000 | Upper bound for the replaced output. Above it the harness persists the output and shows the model a 2 KB preview — worse than not compressing at all. Only applies when there is a raw file to point to |
+| `MCP_RUN_COMPRESS_NO_CO_AUTHORED` | - | Disable Co-Authored-By |
+| `CO_AUTHORED_BY` | - | Replacement for Co-Authored-By (validated: words + optional `<mail@host>`, otherwise no trailer) |
+| `ANTHROPIC_MODEL` | - | Fallback for CO_AUTHORED_BY |
 
 **Bypass:**
-- `no-compress <cmd>` – PreToolUse streift das Präfix und hängt
-  `\n# mcp-run-compress: no-compress` an; PostToolUse liest die Markierung.
-  Nötig, weil PostToolUse **nur die umgeschriebene Command sieht**
-- Background Commands haben zur Hook-Laufzeit noch keine Ausgabe
+- `no-compress <cmd>` – PreToolUse strips the prefix and appends
+  `\n# mcp-run-compress: no-compress`; PostToolUse reads the marker.
+  Necessary because PostToolUse **only sees the rewritten command**
+- Background commands have no output yet when the hook runs
 
-**Drei Grenzen, alle bewusst:**
-- Commands mit Exit ≠ 0 werden **gar nicht** komprimiert — dort feuert
-  `PostToolUseFailure`, und das ignoriert `updatedToolOutput` (karr #24)
-- Background Commands, siehe oben
-- Zwei PostToolUse-Hooks verketten sich nicht: jeder sieht das Original, der
-  zuletzt antwortende gewinnt — lautlos
+**Three limits, all deliberate:**
+- Commands with exit ≠ 0 are **not** compressed at all — there
+  `PostToolUseFailure` fires, and it ignores `updatedToolOutput` (karr #24)
+- Background commands, see above
+- Two PostToolUse hooks do not chain: each sees the original, the one that
+  answers last wins — silently
 
-## Architektur
+## Architecture
 
 **MCP::Run** (lib/MCP/Run.pm):
-- Registriert das `run`-Tool
-- Prüft `allowed_commands` und `validator`
-- Ruft `execute` auf (subclass) und `format_result($tool, $result, $compress, $command)`
+- Registers the `run` tool
+- Checks `allowed_commands` and `validator`
+- Calls `execute` (subclass) and `format_result($tool, $result, $compress, $command)`
 
 **MCP::Run::Bash** (lib/MCP/Run/Bash.pm):
-- `execute()` via `IPC::Open3` als `bash -c`
-- `IO::Select` für stdout/stderr
-- `alarm` für Timeout → Exit 124
-- Erbt `format_result()` von `MCP::Run`
+- `execute()` via `IPC::Open3` as `bash -c`
+- `IO::Select` for stdout/stderr
+- `alarm` for timeout → exit 124
+- Inherits `format_result()` from `MCP::Run`
 
 **MCP::Run::Compress** (lib/MCP/Run/Compress.pm):
-- 11-Stage Filter-Pipeline: filter_stderr, strip_ansi, collapse_cr, match_output, transform, strip_lines, keep_lines, truncate, head/tail, max_lines, on_empty
-- `collapse_cr` läuft unkonditional, nicht per Filter-Attribut: es reduziert je
-  Zeile die `\r`-getrennten Segmente auf das letzte nicht-leere, bildet also ab,
-  was im Terminal steht. Ohne die Stufe gingen Fortschrittsbalken (cargo, npm,
-  docker, pip, wget) ungekürzt durch — sie sind für `split /\n/` **eine** Zeile,
-  und 28 der 48 Filter setzen kein `truncate_lines_at`
-- 30+ Command-spezifische Filter (ls, git, make, kubectl, cargo, cpanm, etc.)
-- `_parse_command()` für git-style subcommands
+- 11-stage filter pipeline: filter_stderr, strip_ansi, collapse_cr, match_output, transform, strip_lines, keep_lines, truncate, head/tail, max_lines, on_empty
+- `collapse_cr` runs unconditionally, not per filter attribute: per line it
+  reduces the `\r`-separated segments to the last non-empty one, so it mirrors
+  what the terminal shows. Without this stage progress bars (cargo, npm,
+  docker, pip, wget) would pass through untrimmed — to `split /\n/` they are
+  **one** line, and 28 of the 48 filters set no `truncate_lines_at`
+- 30+ command-specific filters (ls, git, make, kubectl, cargo, cpanm, etc.)
+- `_parse_command()` for git-style subcommands
 
 ## Testing Notes
 
-**Vorhanden:**
-- `t/00-load.t` – Load Tests
-- `t/05-base.t` – Basis-Klasse
-- `t/10-bash.t` – Bash Execution, allowlist, validator, timeout, format_result
-- `t/20-integration.t` – MCP lifecycle (server/discover, tools/list, tools/call) plus protocol contract: Requests ohne `params._meta` bzw. mit nicht unterstützter Protocol-Revision werden abgewiesen
-- `t/compress.t` – Compression Tests
+**Present:**
+- `t/00-load.t` – Load tests
+- `t/05-base.t` – Base class
+- `t/10-bash.t` – Bash execution, allowlist, validator, timeout, format_result
+- `t/20-integration.t` – MCP lifecycle (server/discover, tools/list, tools/call) plus protocol contract: requests without `params._meta` or with an unsupported protocol revision are rejected
+- `t/compress.t` – Compression tests
 - `t/30-no-warnings.t` – Regression: Compress.pm warnings (transform returning undef, undef inputs)
-- `t/40-compress-bin.t` – `bin/mcp-run-compress`: `--hook` auf beiden Events (PostToolUse-Compression inkl. `persistedOutputPath`, Byte-Deckel mit Marker, Background-Durchreichung; PreToolUse Co-Authored-By und `no-compress`-Markierung), `--install-claude` inkl. Migration alter 0.106-Installationen, fail-open bei kaputtem `@INC`
-- `t/50-bash-bin.t` – `bin/mcp-run-bash` als Subprozess über echtes stdio (Legacy-Handshake): Compression an/aus, `serverInfo`-Identität, `MCP_RUN_TIMEOUT`-Validierung. Deckt den Pfad ab, den echte Clients nehmen — genau dort, wo der Compress-Ladefehler durchrutschte
-- `t/60-filters-doc.t` – Drift-Wächter: gleicht die `=item`-Einträge in `Filters.pm` gegen die registrierte Filtertabelle ab, in beide Richtungen. Existiert, weil `Filters.pm` reine Doku ist, von keinem Code geladen wird und deshalb jahrelang unbemerkt auseinanderlief
+- `t/40-compress-bin.t` – `bin/mcp-run-compress`: `--hook` on both events (PostToolUse compression incl. `persistedOutputPath`, byte cap with marker, background pass-through; PreToolUse Co-Authored-By and `no-compress` marker), `--install-claude` incl. migration of old 0.106 installations, fail-open on a broken `@INC`
+- `t/50-bash-bin.t` – `bin/mcp-run-bash` as a subprocess over real stdio (legacy handshake): compression on/off, `serverInfo` identity, `MCP_RUN_TIMEOUT` validation. Covers the path real clients take — exactly where the compress load error slipped through
+- `t/60-filters-doc.t` – Drift guard: compares the `=item` entries in `Filters.pm` against the registered filter table, in both directions. Exists because `Filters.pm` is pure documentation, loaded by no code, and therefore drifted apart unnoticed for years
 
-**Zwei Tests, die eine Regel festnageln statt eines Verhaltens:** der
-Äquivalenztest in `t/compress.t` (107 Commands × 16 Ausgabeformen × 4
-stderr-Varianten) besteht darauf, dass `compress()` und `process()` dieselbe
-Pipeline sind — er ist die Absicherung dafür, dass die beiden nicht wieder
-auseinanderlaufen. Und der Kollisionstest daneben besteht darauf, dass pro
-Command höchstens ein ausgabeformender Filter je Art matcht; wer einen
-kollidierenden Filter hinzufügt, bekommt einen Fehlschlag mit der Aufforderung,
-eine explizite Vorrangregel zu setzen. Beide laufen über mehrere
-`PERL_HASH_SEED`-Werte, sonst wären sie zufällig grün.
+**Two tests that pin down a rule instead of a behavior:** the
+equivalence test in `t/compress.t` (107 commands × 16 output shapes × 4
+stderr variants) insists that `compress()` and `process()` are the same
+pipeline — it is the safeguard that keeps the two from drifting apart again.
+And the collision test next to it insists that per command at most one
+output-shaping filter of each kind matches; whoever adds a colliding filter
+gets a failure asking them to set an explicit precedence rule. Both run over
+several `PERL_HASH_SEED` values, otherwise they would be green by chance.
 
 ## Troubleshooting
 
-**Hook wird nicht aufgerufen:**
-1. `~/.claude/settings.json` prüfen – es müssen **zwei** Einträge für Bash
-   existieren, PostToolUse (Compression) und PreToolUse (Co-Authored-By,
-   `no-compress`). Fehlt der PostToolUse-Eintrag, ist es eine Installation von
-   vor dem Umbau: `mcp-run-compress --install-claude` erneut laufen lassen
-2. Claude Code liest Hook-Änderungen erst in einer neuen Session
-3. `docker ps` zeigt Container? (bei docker mode)
-4. Logs: `docker run --rm -i raudssus/mcp-run-compress --hook` manuell testen
+**Hook is not called:**
+1. Check `~/.claude/settings.json` – there must be **two** entries for Bash,
+   PostToolUse (compression) and PreToolUse (Co-Authored-By,
+   `no-compress`). If the PostToolUse entry is missing, it is an installation
+   from before the rework: run `mcp-run-compress --install-claude` again
+2. Claude Code only reads hook changes in a new session
+3. Does `docker ps` show containers? (in docker mode)
+4. Logs: test `docker run --rm -i raudssus/mcp-run-compress --hook` manually
 
-**Ausgabe ist unkomprimiert, obwohl der Hook läuft:** drei erwartbare Gründe,
-bevor man sucht – der Command ist mit Exit ≠ 0 gelaufen (dort feuert
-`PostToolUseFailure`, siehe karr #24), es war ein Background-Command, oder ein
-**anderer** PostToolUse-Hook auf Bash antwortet nach uns und gewinnt lautlos.
+**Output is uncompressed although the hook runs:** three expected reasons
+before you go looking – the command ran with exit ≠ 0 (there
+`PostToolUseFailure` fires, see karr #24), it was a background command, or
+**another** PostToolUse hook on Bash answers after us and silently wins.
 
-**Compression funktioniert nicht im MCP-Modus:**
-- `compress: true` im Tool-Call setzen
-- `MCP_RUN_COMPRESS=1` als Env-Var
-- Prüfe: `format_result` wird mit `$command` aufgerufen (lib/MCP/Run.pm)
+**Compression does not work in MCP mode:**
+- Set `compress: true` in the tool call
+- `MCP_RUN_COMPRESS=1` as env var
+- Check: `format_result` is called with `$command` (lib/MCP/Run.pm)
 
 ## Release
 
@@ -178,51 +177,50 @@ bevor man sucht – der Command ist mit Exit ≠ 0 gelaufen (dort feuert
 dzil release
 ```
 
-`[@Author::GETTY]` macht das Release: `GitHub::CreateRelease` legt das GitHub-Release
-an (CPAN-Tarball als Asset, ChangeLog-Notes) und `[@Author::GETTY::Docker / compress]`
-baut+pusht das Docker-Image (`raudssus/mcp-run-compress`, `MCP_RUN_VERSION` build-arg,
-`compress` stage — nur der Compress-Hook, nicht die mcp-run-bash Runtime). Braucht
-`~/.github-identity` und `docker login`. `dzil build`/`dzil test` bauen das Image
-mit (Dev-Loop `prove -lr t/` unberührt).
+`[@Author::GETTY]` does the release: `GitHub::CreateRelease` creates the GitHub release
+(CPAN tarball as asset, ChangeLog notes) and `[@Author::GETTY::Docker / compress]`
+builds and pushes the Docker image (`raudssus/mcp-run-compress`, `MCP_RUN_VERSION` build arg,
+`compress` stage — only the compress hook, not the mcp-run-bash runtime). Needs
+`~/.github-identity` and `docker login`. `dzil build`/`dzil test` build the image
+too (dev loop `prove -lr t/` unaffected).
 
 ## Links
 
-- README.md – User-Dokumentation
-- lib/MCP/Run/Compress/Filters.pm – Alle Filter mit POD
+- README.md – User documentation
+- lib/MCP/Run/Compress/Filters.pm – All filters with POD
 - dist.ini – [@Author::GETTY] config
 
-## Sharp Edges (für Entwickler)
+## Sharp Edges (for developers)
 
-Die Entwickler-Invarianten und Fallen (kein-Sandbox `allowed_commands`,
-`working_directory` als `chdir` im Kindprozess (fehlendes Verzeichnis = Fehler ohne Ausführung), der Byte-Deckel, PostToolUse-Compression und
-die Permission-Grenze des Hooks, die zwei intentionalen Compression-Defaults,
-`format_result`-Threading, MCP >= 0.15 und der `MCP::Server::Legacy`-Pfad, das
-Compile-Zeit-`use` von `MCP::Run::Compress`, `serverInfo`-Identität) sind die einzige
-Quelle der Wahrheit in skill `mcp-run-core` — in jeden `mcp-run-*` Agenten gebrieft.
-Nicht hier duplizieren; für Details dorthin.
+The developer invariants and traps (no-sandbox `allowed_commands`,
+`working_directory` as `chdir` in the child process (missing directory = error without execution), the byte cap, PostToolUse compression and
+the hook's permission boundary, the two intentional compression defaults,
+`format_result` threading, MCP >= 0.15 and the `MCP::Server::Legacy` path, the
+compile-time `use` of `MCP::Run::Compress`, `serverInfo` identity) have their single
+source of truth in skill `mcp-run-core` — briefed into every `mcp-run-*` agent.
+Do not duplicate them here; go there for details.
 
-## Weitere Runner-Ideen
+## Further runner ideas
 
-`MCP::Run::Bash` ist heute die einzige `execute()`-Implementierung. Die
-Architektur erlaubt es, weitere Runner als `MCP::Run`-Subklassen
-hinzuzufügen — jede implementiert `execute($command, $wd, $timeout)`
-und liefert denselben Hashref (`exit_code`, `stdout`, `stderr`,
-optional `error`).
+`MCP::Run::Bash` is currently the only `execute()` implementation. The
+architecture allows adding further runners as `MCP::Run` subclasses —
+each implements `execute($command, $wd, $timeout)` and returns the same
+hashref (`exit_code`, `stdout`, `stderr`, optionally `error`).
 
-| Idee | Zweck | Aufwand |
+| Idea | Purpose | Effort |
 |---|---|---|
-| `MCP::Run::Shell` | Beliebige Shell (zsh, fish, dash) statt bash wählbar | klein — fast 1:1 von Bash.pm kopieren, nur das Binary wechselt |
-| `MCP::Run::Python` | `python -c $command` als Alternative, mit gleichem Compression-Setup | klein — Subklasse, die statt `bash -c` Python aufruft |
-| `MCP::Run::REPL` | Hält einen länger laufenden Interpreter-Process (bash / python / node), Antworten auf einzelne Snippets — kein Neustart pro Tool-Call | mittel — bidirektionale Pipes, Historie, Restart-Strategie |
-| `MCP::Run::SSH` | `ssh user@host $command` mit key-basierter Auth | mittel — Auth-Setup, `known_hosts`-Handling, hop-by-hop-Timeout |
-| `MCP::Run::Docker` | `docker exec <container> $command` — bereits ähnlich zum Docker-Rewrite im Compress-Hook, aber als eigener MCP-Tool | mittel — Container-Lifecycle, Image-Pinning, no-nework-Flag |
-| `MCP::Run::kubectl` | `kubectl exec <pod> -- $command` für Cluster-Debugging | mittel — Pod-Auswahl, Container-Spec, Token-Refresh |
-| `MCP::Run::Local` | Sandboxed Variante (kein bash -c, sondern allowlist von Binaries + Argumenten) | gross — echte Sandbox, nicht first-word-match |
+| `MCP::Run::Shell` | Choose any shell (zsh, fish, dash) instead of bash | small — copy Bash.pm almost 1:1, only the binary changes |
+| `MCP::Run::Python` | `python -c $command` as an alternative, with the same compression setup | small — subclass that calls Python instead of `bash -c` |
+| `MCP::Run::REPL` | Keeps a long-running interpreter process (bash / python / node), answers individual snippets — no restart per tool call | medium — bidirectional pipes, history, restart strategy |
+| `MCP::Run::SSH` | `ssh user@host $command` with key-based auth | medium — auth setup, `known_hosts` handling, hop-by-hop timeout |
+| `MCP::Run::Docker` | `docker exec <container> $command` — already similar to the Docker rewrite in the compress hook, but as its own MCP tool | medium — container lifecycle, image pinning, no-network flag |
+| `MCP::Run::kubectl` | `kubectl exec <pod> -- $command` for cluster debugging | medium — pod selection, container spec, token refresh |
+| `MCP::Run::Local` | Sandboxed variant (no bash -c, but an allowlist of binaries + arguments) | large — a real sandbox, not first-word match |
 
-Jede Subklasse bekommt gratis: Compression-Pipeline, Co-Authored-By-Override
-(bei git commands), `allowed_commands`/`validator`, `format_result`.
-Kompression muss nur aktiv sein, wenn der Runner selbst Output produziert;
-für SSH/kubectl bleibt der Filter gleich, weil `command` weitergegeben wird.
+Every subclass gets for free: compression pipeline, Co-Authored-By override
+(for git commands), `allowed_commands`/`validator`, `format_result`.
+Compression only needs to be active if the runner itself produces output;
+for SSH/kubectl the filter stays the same because `command` is passed on.
 
 ## Delegation
 

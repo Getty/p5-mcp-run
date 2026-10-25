@@ -7,132 +7,132 @@ model: inherit
 
 # mcp-run-core
 
-MCP-Run bietet zwei Produkte aus einer Codebasis:
+MCP-Run offers two products from one codebase:
 
-1. **`mcp-run-bash`** (primär) — stdio MCP-Server mit einem `run`-Tool, das
-   Shell-Commands via `bash -c` ausführt und mit 30+ command-spezifischen
-   Filtern komprimierte Ausgabe liefert.
-2. **`mcp-run-compress`** (Bonus) — Claude Code Hook, der dieselbe
-   Compression-Pipeline auf das eingebaute Bash-Tool von Claude Code anwendet.
+1. **`mcp-run-bash`** (primary) — stdio MCP server with a `run` tool that
+   executes shell commands via `bash -c` and returns compressed output through
+   30+ command-specific filters.
+2. **`mcp-run-compress`** (bonus) — Claude Code hook that applies the same
+   compression pipeline to Claude Code's built-in Bash tool.
 
-Hier steht die Server-Seite — Ausführung, Protokoll, Env-Vars. Pipeline, Hook,
-Filter und die Compression-Env-Vars stehen in `mcp-run-compress`.
+This skill covers the server side — execution, protocol, env vars. Pipeline, hook,
+filters and the compression env vars are in `mcp-run-compress`.
 
 ## Vocabulary
 
 | Term | Meaning |
 |------|---------|
-| **tool** | Das MCP-Tool `run`, registriert via `MCP::Run` |
-| **filter** | Einzelne Compression-Stage in `MCP::Run::Compress` |
-| **stage** | Eine Position in der 11-Stage Pipeline |
-| **wire format** | JSON über stdio (MCP-Protokoll) — einzige I/O-Variante |
-| **hook** | Zwei Hooks für Claude Codes Bash-Tool: PreToolUse (Co-Authored-By, `no-compress`-Marker), PostToolUse (Compression) |
-| **marker** | `\n# mcp-run-compress: no-compress`, von PreToolUse angehängt, von PostToolUse gelesen — PostToolUse sieht nur die *umgeschriebene* Command |
-| **transform_command** | Co-Authored-By Manipulation (Hook) — verwandt aber ≠ compress |
+| **tool** | The MCP tool `run`, registered via `MCP::Run` |
+| **filter** | A single compression stage in `MCP::Run::Compress` |
+| **stage** | A position in the 11-stage pipeline |
+| **wire format** | JSON over stdio (MCP protocol) — the only I/O variant |
+| **hook** | Two hooks for Claude Code's Bash tool: PreToolUse (Co-Authored-By, `no-compress` marker), PostToolUse (compression) |
+| **marker** | `\n# mcp-run-compress: no-compress`, appended by PreToolUse, read by PostToolUse — PostToolUse only sees the *rewritten* command |
+| **transform_command** | Co-Authored-By manipulation (hook) — related to but ≠ compress |
 
 ## Layer Map
 
 ```
-bin/mcp-run-bash       # Stdio MCP Server, primär
-bin/mcp-run-compress   # Pre+PostToolUse Hook + Installer, Bonus (Compression in PostToolUse)
-lib/MCP/Run.pm         # Basis-Server, registriert das `run`-Tool
+bin/mcp-run-bash       # Stdio MCP server, primary
+bin/mcp-run-compress   # Pre+PostToolUse hook + installer, bonus (compression in PostToolUse)
+lib/MCP/Run.pm         # Base server, registers the `run` tool
 lib/MCP/Run/Bash.pm    # bash -c via IPC::Open3
-lib/MCP/Run/Compress.pm        # Filter-Pipeline + 30+ command-Filter
-lib/MCP/Run/Compress/Filters.pm # Filter-Definitionen mit POD
+lib/MCP/Run/Compress.pm        # Filter pipeline + 30+ command filters
+lib/MCP/Run/Compress/Filters.pm # Filter definitions with POD
 ```
 
-`MCP::Run::Bash` erbt `format_result` von `MCP::Run`. Compression ist nur aktiv,
-wenn `$compress` true und der Caller den `$command` durchreicht — bei Override
-in Subclasses **muss** `$command` weitergegeben werden, sonst greifen die
-command-spezifischen Filter nicht.
+`MCP::Run::Bash` inherits `format_result` from `MCP::Run`. Compression is only active
+when `$compress` is true and the caller passes `$command` through — when overriding
+in subclasses `$command` **must** be passed on, otherwise the
+command-specific filters do not apply.
 
 ## Core invariants
 
-- **`allowed_commands` ist KEIN Sandbox.** Es prüft nur das erste Wort der raw
-  command — `bash -c 'rm -rf /'` mit `allowed_commands => ['bash']` läuft.
-  Echte Sandboxing ist eine separate Diskussion; nicht "fixen" wollen.
-- **`working_directory` wird per `chdir` im Kindprozess gesetzt** (k42), nicht
-  als `cd '$dir' &&`-Präfix: ein Präfix ließ Kettenglieder nach `;`, `&` oder
-  Zeilenumbruch im Aufrufer-cwd laufen. Scheitert der `chdir`, meldet das Kind es
-  über eine Close-on-exec-Pipe, der Befehl startet nie (Exit 1, Fehlertext).
-- **Timeout → Exit 124.** Konvention wie GNU `timeout(1)`. Nicht eigene
-  Exit-Codes erfinden.
-- **MCP >= 0.15 ist Pflicht** (cpanfile-Pin, bewusst ohne Kompatibilitätsweichen).
-  Ab 0.15 ist die Protocol-Revision Teil *jedes* Requests: `params._meta` braucht
-  `protocolVersion` (gegen `MCP::Constants::SUPPORTED_VERSIONS`) und
-  `clientCapabilities`, sonst weist `MCP::Server::_check_meta` **vor** dem Dispatch
-  mit `Missing protocol version` ab. Wer im Test einen nackten
-  `MCP::Server::Context` baut, umgeht den Transport und landet im modernen Pfad —
-  dann fallen scheinbar unabhängige Subtests gleichzeitig um, und die eine echte
-  Ursache versteckt sich hinter vier Symptomen. `initialize` heißt dort
-  `server/discover`, `serverInfo` liegt in `result._meta`. Revision nie hardcoden,
-  immer aus `MCP::Constants` ziehen.
-- **Echte stdio-Clients laufen über `MCP::Server::Legacy`** (klassischer
-  `initialize`-Handshake, `_check_meta` übersprungen) — deshalb war der
-  Protokollbruch ein reines Testproblem. MCP dokumentiert diesen Pfad aber als
-  temporär; wenn er fällt, verlieren Clients mit klassischem Handshake den Zugang
-  zu `mcp-run-bash` (karr #7, offene Produktfrage).
-- **`serverInfo` kommt aus Klassen-Defaults, nicht aus dem bin-Skript.**
-  `MCP::Run::Bash` setzt `name`/`version` und überschreibt damit die
-  `MCP::Server`-Defaults (`PerlServer`/`1.0.0`). Identität gehört in die Klasse,
-  damit Library-Nutzer sie mitbekommen — nicht in `bin/mcp-run-bash`.
+- **`allowed_commands` is NOT a sandbox.** It only checks the first word of the raw
+  command — `bash -c 'rm -rf /'` with `allowed_commands => ['bash']` runs.
+  Real sandboxing is a separate discussion; do not try to "fix" it.
+- **`working_directory` is set via `chdir` in the child process** (k42), not
+  as a `cd '$dir' &&` prefix: a prefix let chain members after `;`, `&` or a
+  newline run in the caller's cwd. If the `chdir` fails, the child reports it
+  through a close-on-exec pipe and the command never starts (exit 1, error text).
+- **Timeout → exit 124.** Same convention as GNU `timeout(1)`. Do not invent your own
+  exit codes.
+- **MCP >= 0.15 is mandatory** (cpanfile pin, deliberately without compatibility switches).
+  Since 0.15 the protocol revision is part of *every* request: `params._meta` needs
+  `protocolVersion` (checked against `MCP::Constants::SUPPORTED_VERSIONS`) and
+  `clientCapabilities`, otherwise `MCP::Server::_check_meta` rejects **before** dispatch
+  with `Missing protocol version`. Whoever builds a bare
+  `MCP::Server::Context` in a test bypasses the transport and lands in the modern path —
+  then seemingly unrelated subtests fall over at the same time, and the one real
+  cause hides behind four symptoms. There `initialize` is called
+  `server/discover`, and `serverInfo` lives in `result._meta`. Never hardcode the revision,
+  always pull it from `MCP::Constants`.
+- **Real stdio clients go through `MCP::Server::Legacy`** (classic
+  `initialize` handshake, `_check_meta` skipped) — that is why the
+  protocol break was purely a test problem. MCP documents this path as
+  temporary, though; when it goes away, clients with the classic handshake lose access
+  to `mcp-run-bash` (karr #7, open product question).
+- **`serverInfo` comes from class defaults, not from the bin script.**
+  `MCP::Run::Bash` sets `name`/`version` and thereby overrides the
+  `MCP::Server` defaults (`PerlServer`/`1.0.0`). Identity belongs in the class
+  so library users get it too — not in `bin/mcp-run-bash`.
 
-## Env-Vars MCP-Server
+## MCP server env vars
 
-| Var | Default | Bedeutung |
-|-----|---------|-----------|
-| `MCP_RUN_ALLOWED_COMMANDS` | alle | Komma-Whitelist |
-| `MCP_RUN_WORKING_DIRECTORY` | cwd | Default Working Directory |
-| `MCP_RUN_TIMEOUT` | 30 | Sekunden |
-| `MCP_RUN_COMPRESS` | bin: 1, modul: 0 | Compression aktiv |
-| `MCP_RUN_TOOL_NAME` | run | Name des MCP-Tools |
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `MCP_RUN_ALLOWED_COMMANDS` | all | Comma whitelist |
+| `MCP_RUN_WORKING_DIRECTORY` | cwd | Default working directory |
+| `MCP_RUN_TIMEOUT` | 30 | Seconds |
+| `MCP_RUN_COMPRESS` | bin: 1, module: 0 | Compression active |
+| `MCP_RUN_TOOL_NAME` | run | Name of the MCP tool |
 
 ## Test layout & traps
 
 ```
-t/00-load.t          # Load Tests
-t/05-base.t          # Basis-Klasse
+t/00-load.t          # Load tests
+t/05-base.t          # Base class
 t/10-bash.t          # bash -c, allowlist, validator, timeout, format_result
 t/20-integration.t   # MCP lifecycle (server/discover, tools/list, tools/call)
-                     # + protocol contract: fehlendes _meta / alte Revision
-t/50-bash-bin.t      # bin/mcp-run-bash als Subprozess über echtes stdio
-                     # (Legacy-Handshake): Compression an/aus, serverInfo-Identität
+                     # + protocol contract: missing _meta / old revision
+t/50-bash-bin.t      # bin/mcp-run-bash as a subprocess over real stdio
+                     # (legacy handshake): compression on/off, serverInfo identity
 ```
 
-Die Compression-Tests: `mcp-run-compress`.
+The compression tests: `mcp-run-compress`.
 
-**Negative Assertions allein fangen einen toten Server nicht.** In `t/50-bash-bin.t`
-gingen `unlike $text, qr/drwxr-xr-x/` und `unlike $text, qr/total \d+/` auf dem
-kaputten Build *leer* durch — ein leeres Ergebnis enthält auch keine Rechte-Spalte.
-Was den Test trägt, ist die positive Assertion (`like ... qr/^- README\.md$/m`)
-gepaart mit einem `MCP_RUN_COMPRESS=0`-Lauf, der das rohe Listing behalten muss.
-Erst diese Paarung verhindert, dass sich ein Crash durch stilles Abschalten der
-Compression "beheben" lässt. Beim Schreiben von Filter-Tests immer so paaren.
+**Negative assertions alone do not catch a dead server.** In `t/50-bash-bin.t`
+`unlike $text, qr/drwxr-xr-x/` and `unlike $text, qr/total \d+/` passed *empty*
+on the broken build — an empty result contains no permissions column either.
+What carries the test is the positive assertion (`like ... qr/^- README\.md$/m`)
+paired with an `MCP_RUN_COMPRESS=0` run that must keep the raw listing.
+Only this pairing prevents a crash from being "fixed" by silently switching off
+compression. Always pair them like this when writing filter tests.
 
-**`prove -l t/` ist non-recursive** und überspringt nichts in Subdirs — alle
-Tests liegen direkt unter `t/`, aber gewöhne dir trotzdem `prove -lr t/` an,
-denn sobald jemand Subdirs anlegt (z.B. `t/live/`), werden die sonst still
-übersprungen. **Trap:** "Tests grün" ist falsch, wenn Subdir-Tests still
-gefiltert wurden.
+**`prove -l t/` is non-recursive** and skips anything in subdirs — all
+tests live directly under `t/`, but get used to `prove -lr t/` anyway,
+because as soon as someone creates subdirs (e.g. `t/live/`), they would otherwise be
+silently skipped. **Trap:** "tests green" is wrong if subdir tests were silently
+filtered out.
 
 ## Release
 
-`dist.ini` nutzt `[@Author::GETTY]` für das komplette Release: `GitHub::CreateRelease`
-legt das GitHub-Release an (CPAN-Tarball als Asset, ChangeLog-Notes), und der
-`[@Author::GETTY::Docker / compress]` Subsection baut+pusht das Docker-Image
+`dist.ini` uses `[@Author::GETTY]` for the complete release: `GitHub::CreateRelease`
+creates the GitHub release (CPAN tarball as asset, ChangeLog notes), and the
+`[@Author::GETTY::Docker / compress]` subsection builds and pushes the Docker image
 (`raudssus/mcp-run-compress`, `target=compress`, `build_arg=MCP_RUN_VERSION=%v`).
-Kein `maint/release-after.pl` mehr — die Bundle-Plugins machen alles. Braucht
-`~/.github-identity` und `docker login`. Multi-Arch ist nicht wired (`Docker::API`
-baut single-arch). Die Prozedur steht in `getty-perl-release-author-getty` und
+No more `maint/release-after.pl` — the bundle plugins do everything. Needs
+`~/.github-identity` and `docker login`. Multi-arch is not wired (`Docker::API`
+builds single-arch). The procedure is in `getty-perl-release-author-getty` and
 `perl-release-dist-ini`.
 
 ## Conventions
 
-- Style, Moose patterns, Module-Loading, cpanfile-Pinning: skill `getty-perl-core`
-- Mojo::Base (Attribute, Defaults, lazy `sub {}`, Rollen) — die ganze Distribution
-  baut darauf auf: skill `perl-mojo`
-- Bundle/POD/Changes/{{$NEXT}} Konventionen: skill `getty-perl-release-author-getty`
-- dist.ini Plugins: skill `perl-release-dist-ini`
-- MCP-Server Setup (`MCP::Server`, `$server->tool()`): skill `perl-mcp`
+- Style, Moose patterns, module loading, cpanfile pinning: skill `getty-perl-core`
+- Mojo::Base (attributes, defaults, lazy `sub {}`, roles) — the whole distribution
+  is built on it: skill `perl-mojo`
+- Bundle/POD/Changes/{{$NEXT}} conventions: skill `getty-perl-release-author-getty`
+- dist.ini plugins: skill `perl-release-dist-ini`
+- MCP server setup (`MCP::Server`, `$server->tool()`): skill `perl-mcp`
 
-Diese Skills sind non-negotiable — silently anwenden.
+These skills are non-negotiable — apply them silently.

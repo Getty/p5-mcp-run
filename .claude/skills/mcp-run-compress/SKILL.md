@@ -5,78 +5,78 @@ user-invocable: false
 model: inherit
 ---
 
-# mcp-run-compress — Pipeline, Hook, Filter
+# mcp-run-compress — Pipeline, Hook, Filters
 
-Die Compression-Hälfte von MCP-Run: die Filter-Pipeline in `MCP::Run::Compress`,
-der Claude-Code-Hook in `bin/mcp-run-compress` und die Env-Vars, die beide steuern.
-Der Server, die Ausführung und das MCP-Protokoll stehen in `mcp-run-core`.
+The compression half of MCP-Run: the filter pipeline in `MCP::Run::Compress`,
+the Claude Code hook in `bin/mcp-run-compress` and the env vars that steer both.
+The server, execution and the MCP protocol are covered in `mcp-run-core`.
 
-## Die 11-Stage Pipeline
+## The 11-stage pipeline
 
-`MCP::Run::Compress` filtert in dieser Reihenfolge:
+`MCP::Run::Compress` filters in this order:
 
 `filter_stderr → strip_ansi → collapse_cr → match_output → transform → strip_lines → keep_lines → truncate → head/tail → max_lines → on_empty`
 
-`collapse_cr` ist unkonditional und kennt kein Filter-Attribut. Grund: ein
-Fortschrittsbalken ist für `split /\n/` eine einzige Zeile, `max_lines` greift
-dort nicht, und 28 der 48 Filter setzen kein `truncate_lines_at` — ohne die
-Stufe liefe ein 224-KB-Balken bei `cargo build`, `make`, `npm install` und
-`docker build` unverändert durch. Die Stufe ist identitätserhaltend, wenn kein
-`\r` vorkommt (über 56 Command-Varianten byte-identisch nachgemessen).
+`collapse_cr` is unconditional and has no filter attribute. Reason: to
+`split /\n/` a progress bar is a single line, `max_lines` does not apply
+there, and 28 of the 48 filters set no `truncate_lines_at` — without the
+stage a 224 KB bar from `cargo build`, `make`, `npm install` and
+`docker build` would pass through unchanged. The stage preserves identity when no
+`\r` occurs (measured byte-identical across 56 command variants).
 
-`_parse_command()` erkennt git-style subcommands, damit die 30+ Command-Filter
-(ls, git, make, kubectl, cargo, cpanm, …) matchen können. Die Filter selbst
-stehen in `MCP::Run::Compress::Filters` (mit POD).
+`_parse_command()` recognizes git-style subcommands so the 30+ command filters
+(ls, git, make, kubectl, cargo, cpanm, …) can match. The filters themselves
+live in `MCP::Run::Compress::Filters` (with POD).
 
-## Der Hook
+## The hook
 
-Zwei Hooks für Claude Codes Bash-Tool:
+Two hooks for Claude Code's Bash tool:
 
-- **PreToolUse** — hängt den `no-compress`-Marker an die Command und schreibt
+- **PreToolUse** — appends the `no-compress` marker to the command and writes
   Co-Authored-By (`transform_command`).
-- **PostToolUse** — komprimiert die Ausgabe. Die Command wird nicht mehr
-  umgeschrieben; `--b64` und `--filter-files` gibt es nicht mehr, mit ihnen sind
-  der hardcodierte 1800s-Timeout und das Docker-Pipe-Snippet verschwunden.
+- **PostToolUse** — compresses the output. The command is no longer
+  rewritten; `--b64` and `--filter-files` no longer exist, and with them the
+  hardcoded 1800s timeout and the Docker pipe snippet are gone.
 
-**Der Hook trifft keine Permission-Entscheidung.** Permission ist Claude Codes Job.
-Deshalb wird der `no-compress`-Marker *angehängt* und nicht vorangestellt: das erste
-Wort der Command ist das, wogegen Claude Code Permission-Regeln matcht.
+**The hook makes no permission decision.** Permission is Claude Code's job.
+That is why the `no-compress` marker is *appended* and not prepended: the first
+word of the command is what Claude Code matches permission rules against.
 
-**Drei Grenzen, alle bewusst:**
+**Three limits, all deliberate:**
 
-- Commands mit Exit ≠ 0 werden gar nicht komprimiert (dort feuert
-  PostToolUseFailure und ignoriert `updatedToolOutput`, karr #24).
-- Background-Commands haben zur Hook-Laufzeit noch keine Ausgabe.
-- Zwei PostToolUse-Hooks verketten sich nicht — jeder sieht das Original, der
-  letzte gewinnt, lautlos.
+- Commands with exit ≠ 0 are not compressed at all (there
+  PostToolUseFailure fires and ignores `updatedToolOutput`, karr #24).
+- Background commands have no output yet when the hook runs.
+- Two PostToolUse hooks do not chain — each sees the original, the
+  last one wins, silently.
 
-**Bypass-Mechanismen** (nicht entfernen, sind intentional):
+**Bypass mechanisms** (do not remove, they are intentional):
 
-- `no-compress <cmd>` — einzelne Command ohne Compression
-- Background-Commands werden nicht umgeschrieben
-- Commands die `mcp-run-compress` selbst enthalten werden nicht umgeschrieben
+- `no-compress <cmd>` — a single command without compression
+- Background commands are not rewritten
+- Commands that contain `mcp-run-compress` itself are not rewritten
 
-## Invarianten
+## Invariants
 
-- **`mcp-run-bash` Compression default = AN** (bin/mcp-run-bash), aber
-  Modul-Attribut default = AUS (lib/MCP/Run.pm). Beide Defaults sind intentional
-  und **nicht** angleichen.
-- **`MCP::Run::Compress` wird compile-time geladen** (`use` in lib/MCP/Run.pm),
-  obwohl `_get_compressor` lazy konstruiert. Absicht: ein fehlendes Compress-Modul
-  soll den Server beim **Start** umbringen, nicht beim ersten `tools/call`. Genau
-  das fehlte bis 0.105 und machte jeden `tools/call` in der Default-Konfiguration
-  unbrauchbar. Nicht in ein `require` im Lazy-Loader zurückbauen.
+- **`mcp-run-bash` compression default = ON** (bin/mcp-run-bash), but
+  module attribute default = OFF (lib/MCP/Run.pm). Both defaults are intentional;
+  do **not** align them.
+- **`MCP::Run::Compress` is loaded at compile time** (`use` in lib/MCP/Run.pm),
+  even though `_get_compressor` constructs lazily. Intent: a missing compress module
+  should kill the server at **startup**, not at the first `tools/call`. Exactly
+  that was missing until 0.105 and made every `tools/call` in the default configuration
+  unusable. Do not turn it back into a `require` in the lazy loader.
 
-## Env-Vars Hook
+## Hook env vars
 
-| Var | Default | Bedeutung |
-|-----|---------|-----------|
-| `MCP_RUN_COMPRESS_INSTALL_MODE` | native | native oder docker |
-| `MCP_RUN_COMPRESS_IMAGE` | raudssus/mcp-run-compress:latest | Docker Image |
-| `MCP_RUN_COMPRESS_MAX_BYTES` | 29000 | Deckel der ersetzten Ausgabe; darüber persistiert der Harness sie und zeigt 2 KB Preview |
-| `MCP_RUN_COMPRESS_NO_CO_AUTHORED` | — | Co-Authored-By deaktivieren |
-| `CO_AUTHORED_BY` | — | Replacement. Validiert: Wörter plus optional `<mail@host>`, sonst wird der Command unverändert gelassen |
-| `ANTHROPIC_MODEL` | — | Fallback für CO_AUTHORED_BY, gleiche Einschränkung |
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `MCP_RUN_COMPRESS_INSTALL_MODE` | native | native or docker |
+| `MCP_RUN_COMPRESS_IMAGE` | raudssus/mcp-run-compress:latest | Docker image |
+| `MCP_RUN_COMPRESS_MAX_BYTES` | 29000 | Cap on the replaced output; above it the harness persists the output and shows a 2 KB preview |
+| `MCP_RUN_COMPRESS_NO_CO_AUTHORED` | — | Disable Co-Authored-By |
+| `CO_AUTHORED_BY` | — | Replacement. Validated: words plus optional `<mail@host>`, otherwise the command is left unchanged |
+| `ANTHROPIC_MODEL` | — | Fallback for CO_AUTHORED_BY, same restriction |
 
 ## Tests
 
@@ -84,9 +84,9 @@ Wort der Command ist das, wogegen Claude Code Permission-Regeln matcht.
 t/compress.t          # Compression
 t/30-no-warnings.t   # Regression: Compress.pm warnings (transform undef, undef inputs)
 t/40-compress-bin.t  # bin/mcp-run-compress: --hook (PreToolUse + PostToolUse),
-                     # --install-claude inkl. Migration alter Installationen,
-                     # Byte-Deckel, Background-Bypass, fail-open
-t/60-filters-doc.t   # Filters.pm gegen die registrierte Filtertabelle (Drift-Wächter)
+                     # --install-claude incl. migration of old installations,
+                     # byte cap, background bypass, fail-open
+t/60-filters-doc.t   # Filters.pm against the registered filter table (drift guard)
 ```
 
-**Filter-Tests immer paaren** — die Assertion-Falle steht in `mcp-run-core`.
+**Always pair filter tests** — the assertion trap is described in `mcp-run-core`.
