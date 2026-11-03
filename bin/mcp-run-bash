@@ -2,6 +2,8 @@
 # PODNAME: mcp-run-bash
 # ABSTRACT: MCP server that executes shell commands via bash over stdio
 
+our $VERSION = '0.108';
+
 use strict;
 use warnings;
 use MCP::Run::Bash;

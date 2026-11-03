@@ -2,6 +2,8 @@
 # PODNAME: mcp-run-compress
 # ABSTRACT: Claude Code hooks that run Bash tool output through MCP::Run::Compress
 
+our $VERSION = '0.108';
+
 use strict;
 use warnings;
 use Getopt::Long qw( GetOptions );
