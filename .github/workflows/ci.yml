@@ -23,6 +23,10 @@ jobs:
           - '5.40'
     container:
       image: perl:${{ matrix.perl-version }}-bookworm
+      # PID 1 reaps the processes whose parents ended, as the tests of the
+      # process groups expect; the default `tail -f /dev/null` leaves them
+      # as zombies.
+      options: --init
     steps:
       - uses: actions/checkout@v4
       - name: Fix safe.directory
