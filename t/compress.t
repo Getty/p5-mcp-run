@@ -1,3 +1,4 @@
+#!/usr/bin/env perl
 use Test::More;
 use lib 'lib';
 use MCP::Run::Compress;
