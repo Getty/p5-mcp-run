@@ -1,8 +1,8 @@
+requires 'JSON::MaybeXS';
 requires 'MCP' => '0.15';
 requires 'Mojolicious';
-requires 'Text::Trim';
-requires 'JSON::MaybeXS';
 requires 'Path::Tiny';
+requires 'Text::Trim';
 
 on test => sub {
   requires 'Test::More';
