@@ -233,6 +233,6 @@ the delegation lock and the publish gate are shared house rules (skilletor bundl
 | Implement / refactor / debug behavior-relevant code | `mcp-run-worker` |
 | Commits, `Changes`, card → done, pre-release audit | `mcp-run-release-manager` |
 
-The agent carries its skills via `briefing.skills` (see `.claude/agents/`); the main
+The agent carries its skills via `skills:` (see `.claude/agents/`); the main
 agent delegates rather than loading them. Skill sources live under `.claude/skills/`.
 The karr board (`refs/karr/*`) is the internal coordination channel.
